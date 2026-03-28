@@ -1,0 +1,130 @@
+name: Toast POS Daily Sync
+
+# Runs daily at 6am MT (12:00 UTC) — after Toast's nightly export completes (~4am)
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: 'Number of days to backfill'
+        required: false
+        default: '1'
+
+jobs:
+  sync-toast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install SFTP client
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: Setup SSH key for Toast SFTP
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.TOAST_SFTP_KEY }}" > ~/.ssh/toast_sftp
+          chmod 600 ~/.ssh/toast_sftp
+          # Trust Toast's SFTP host
+          ssh-keyscan -H s-9b0f88558b264dfda.server.transfer.us-east-1.amazonaws.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Calculate date range
+        id: dates
+        run: |
+          DAYS_BACK="${{ github.event.inputs.days_back || '1' }}"
+          echo "days_back=$DAYS_BACK" >> $GITHUB_OUTPUT
+          # Generate list of dates to fetch
+          for i in $(seq 0 $((DAYS_BACK - 1))); do
+            date -d "-$((i+1)) days" +%Y%m%d
+          done > /tmp/dates.txt
+          echo "Dates to fetch:"
+          cat /tmp/dates.txt
+
+      - name: Download Toast exports via SFTP
+        env:
+          TOAST_SFTP_USER: ${{ secrets.TOAST_SFTP_USER }}
+          TOAST_EXPORT_ID: ${{ secrets.TOAST_EXPORT_ID }}
+        run: |
+          mkdir -p /tmp/toast-data
+
+          while read DATE_STR; do
+            echo "=== Fetching $DATE_STR ==="
+            REMOTE_DIR="/${TOAST_EXPORT_ID}/${DATE_STR}"
+
+            # Use lftp for reliable SFTP with key auth
+            lftp -e "
+              set sftp:connect-program 'ssh -i ~/.ssh/toast_sftp -o StrictHostKeyChecking=no';
+              open sftp://${TOAST_SFTP_USER}@s-9b0f88558b264dfda.server.transfer.us-east-1.amazonaws.com;
+              lcd /tmp/toast-data;
+              cd ${REMOTE_DIR} || exit 0;
+              mget ItemSelectionDetails.csv CheckDetails.csv OrderDetails.csv 2>/dev/null;
+              bye
+            " 2>/dev/null || echo "No data for $DATE_STR (might not exist yet)"
+
+            # Rename files with date prefix to avoid overwrites
+            for f in /tmp/toast-data/ItemSelectionDetails.csv \
+                     /tmp/toast-data/CheckDetails.csv \
+                     /tmp/toast-data/OrderDetails.csv; do
+              if [ -f "$f" ]; then
+                BASE=$(basename "$f" .csv)
+                mv "$f" "/tmp/toast-data/${DATE_STR}_${BASE}.csv"
+                echo "  Got: ${DATE_STR}_${BASE}.csv"
+              fi
+            done
+          done < /tmp/dates.txt
+
+          echo "=== Files downloaded ==="
+          ls -la /tmp/toast-data/ || echo "No files downloaded"
+
+      - name: Upload ItemSelectionDetails (TSV/CSV) to Pretzel OS
+        env:
+          WORKER_URL: ${{ secrets.PRETZEL_OS_URL }}
+        run: |
+          for f in /tmp/toast-data/*_ItemSelectionDetails.csv; do
+            [ -f "$f" ] || continue
+            echo "Uploading $(basename $f) to /account/toast-upload..."
+            RESULT=$(curl -s -X POST "${WORKER_URL}/account/toast-upload" \
+              -H "Content-Type: text/tab-separated-values" \
+              --data-binary @"$f")
+            echo "  Result: $RESULT"
+          done
+
+      - name: Upload CheckDetails (customer data) to Pretzel OS
+        env:
+          WORKER_URL: ${{ secrets.PRETZEL_OS_URL }}
+        run: |
+          for f in /tmp/toast-data/*_CheckDetails.csv; do
+            [ -f "$f" ] || continue
+            echo "Uploading $(basename $f) to /account/toast-checks..."
+            RESULT=$(curl -s -X POST "${WORKER_URL}/account/toast-checks" \
+              -H "Content-Type: text/csv" \
+              --data-binary @"$f")
+            echo "  Result: $RESULT"
+          done
+
+      - name: Upload OrderDetails (revenue data) to Pretzel OS
+        env:
+          WORKER_URL: ${{ secrets.PRETZEL_OS_URL }}
+        run: |
+          for f in /tmp/toast-data/*_OrderDetails.csv; do
+            [ -f "$f" ] || continue
+            echo "Uploading $(basename $f) to /account/toast-orders..."
+            RESULT=$(curl -s -X POST "${WORKER_URL}/account/toast-orders" \
+              -H "Content-Type: text/csv" \
+              --data-binary @"$f")
+            echo "  Result: $RESULT"
+          done
+
+      - name: Verify sync
+        env:
+          WORKER_URL: ${{ secrets.PRETZEL_OS_URL }}
+        run: |
+          echo "=== Toast Stats ==="
+          curl -s "${WORKER_URL}/account/toast-stats" | python3 -m json.tool
+          echo ""
+          echo "=== Customer Count ==="
+          curl -s "${WORKER_URL}/account/customers" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          print(f\"Total customers with contact info: {data['total_customers']}\")
+          for c in data['customers'][:5]:
+            print(f\"  {c.get('customer_name','?')} — {c.get('order_count',0)} orders, \${c.get('total_spent',0)}\")
+          "

@@ -1,0 +1,108 @@
+## Dangerous Pretzel Co — Pretzel OS v2
+## Cloudflare Workers deployment config
+## Deploy: wrangler deploy
+
+account_id = "f399e3bcd5ea1501830d0ad1d35d9da3"
+name = "pretzel-os"
+main = "workers/router.js"        # Routes incoming requests to correct worker
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ── D1 Database ────────────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "pretzel-os"
+database_id = "950cc9e0-9dd2-4f78-af55-de6385ab293b"
+
+# ── KV Namespace (session cache, token storage) ───────────────
+[[kv_namespaces]]
+binding = "KV"
+id = "42bc0c61cafe4e9bac74609c2b28fb4a"
+
+# ── Cron Triggers ─────────────────────────────────────────────
+# Router.js dispatches to correct worker based on cron time
+# Execution order matters: CFO → Optimizer → Scout → Qualifier → Agents
+[triggers]
+crons = [
+  "0 4 * * 7",       # CFO:        Sunday   10pm MT (4am UTC Mon)
+  "0 5 * * 7",       # Optimizer:  Sunday   11pm MT (5am UTC Mon)
+  "0 12 * * 1",      # Scout:      Monday    6am MT (12pm UTC)
+  "0 13 * * 1",      # Qualifier:  Monday    7am MT (1pm UTC)
+  "0 14 * * 1",      # Catering:   Monday    8am MT (2pm UTC)
+  "0 14 * * 2",      # Outreach:   Tuesday   8am MT (2pm UTC)
+  "0 14 * * 3",      # Catering:   Wednesday 8am MT (2pm UTC)
+  "0 14 * * 4",      # Outreach:   Thursday  8am MT (2pm UTC)
+  "0 14 * * 5",      # Pilot:      Friday    8am MT (2pm UTC)
+  "0 15 * * 1",      # Account:    Monday    9am MT (3pm UTC)
+  "0 10 * * *",      # Toast Sync: Daily     4am MT (10am UTC)
+  "0 20 * * *",      # Reviews+Retail: Daily 2pm MT (8pm UTC)
+  "0 * * * *",       # CFO Pulse: Hourly (D1 only, free)
+  "*/15 * * * *",    # Reply Scanner: Every 15 min (Gmail scan, no Claude)
+]
+
+# ── Queues (Reply Handler) ─────────────────────────────────
+[[queues.producers]]
+queue = "pretzel-reply-queue"
+binding = "REPLY_QUEUE"
+
+[[queues.consumers]]
+queue = "pretzel-reply-queue"
+max_batch_size = 5
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "pretzel-reply-dlq"
+
+[[queues.producers]]
+queue = "pretzel-reply-dlq"
+binding = "REPLY_DLQ"
+
+# ── Queues (Cross-Channel Signal) ──────────────────────────
+[[queues.producers]]
+queue = "pretzel-signal-queue"
+binding = "SIGNAL_QUEUE"
+
+[[queues.consumers]]
+queue = "pretzel-signal-queue"
+max_batch_size = 10
+max_batch_timeout = 60
+max_retries = 2
+
+# ── Routes (custom domain) ────────────────────────────────────
+# TODO: Enable once dangerouspretzel.com is proxied through this CF account
+# [[routes]]
+# pattern = "api.dangerouspretzel.com/*"
+# zone_name = "dangerouspretzel.com"
+
+# ── Environment variables ─────────────────────────────────────
+# Secrets — set with: wrangler secret put SECRET_NAME
+# DO NOT hardcode these here
+#
+# wrangler secret put ANTHROPIC_API_KEY
+# wrangler secret put APOLLO_API_KEY
+# wrangler secret put GMAIL_CLIENT_ID
+# wrangler secret put GMAIL_CLIENT_SECRET
+# wrangler secret put GMAIL_REFRESH_TOKEN
+# wrangler secret put SWELLCX_API_KEY
+# wrangler secret put TOAST_COOKIE
+# wrangler secret put SQUARE_WEBHOOK_SECRET
+# wrangler secret put SQUARE_ACCESS_TOKEN
+# wrangler secret put QBO_CLIENT_ID
+# wrangler secret put QBO_CLIENT_SECRET
+# wrangler secret put QBO_REFRESH_TOKEN
+# wrangler secret put QBO_REALM_ID
+# wrangler secret put QBO_WEBHOOK_TOKEN
+
+[vars]
+FROM_EMAIL = "drew@dangerouspretzel.com"
+DREW_EMAIL = "drew@dangerouspretzel.com"
+BRAND_NAME = "Dangerous Pretzel Co"
+BRAND_DOMAIN = "dangerouspretzel.com"
+GOOGLE_PLACE_ID = "ChIJ8VjRwGf1UofDwab1j3GUsA"
+SLC_METRO_RADIUS_MILES = "50"
+OUTREACH_DAILY_LIMIT = "3"           # TAM protection — low and slow
+OUTREACH_WARMUP_WEEKS = "3"          # Tier 2 only for first 3 weeks
+OUTREACH_APPROVAL_GATE = "20"        # Human review on first 20 sends
+OUTREACH_QUALITY_MIN = "7"           # Min self-score before send
+REVIEW_REQUEST_COOLDOWN_DAYS = "30"
+DEPLOY_DATE = "2026-03-20"
+ENVIRONMENT = "production"
