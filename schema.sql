@@ -226,6 +226,26 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 
 -- ------------------------------------------------------------
+-- GUESTBOOK — permanent customer directory (Toast → Square transition)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS guestbook (
+  id              TEXT PRIMARY KEY,           -- normalized phone or generated key
+  first_name      TEXT,
+  last_name       TEXT,
+  phone           TEXT,                       -- normalized +1XXXXXXXXXX
+  phone_raw       TEXT,                       -- original from Toast
+  email           TEXT,
+  last_visit      TEXT,                       -- ISO date from Toast
+  order_count     INTEGER DEFAULT 0,
+  source          TEXT DEFAULT 'toast',       -- toast | square
+  synced_at       TEXT DEFAULT (datetime('now')),
+  matched_square_id TEXT                      -- future: link to Square customer ID
+);
+
+CREATE INDEX IF NOT EXISTS idx_guestbook_phone ON guestbook(phone);
+CREATE INDEX IF NOT EXISTS idx_guestbook_name  ON guestbook(first_name, last_name);
+
+-- ------------------------------------------------------------
 -- AGENT_PROMPTS — live prompt store; optimizer rewrites these
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_prompts (

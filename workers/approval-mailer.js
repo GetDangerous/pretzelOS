@@ -69,7 +69,9 @@ async function sendGmail(env, { to, subject, body }) {
   });
   const { access_token } = await tokenResp.json();
   const message = [`To: ${to}`, `From: Pretzel OS <${env.FROM_EMAIL}>`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(message))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },

@@ -33,8 +33,46 @@
  */
 
 const MAX_CONVERSATION_TURNS = 20;  // Keep last 20 turns in context
-const SESSION_TTL_SECONDS = 86400;   // Sessions expire after 24hr
 const MAX_TOOL_LOOPS = 6;            // Chat agent is quick — fewer loops needed
+
+// ── Session storage helpers (Durable Object — persistent, no TTL) ─────────────
+// Falls back to KV if CHAT_SESSIONS binding isn't available (local dev, old deploys)
+async function loadSessionHistory(sessionId, env) {
+  if (env.CHAT_SESSIONS) {
+    try {
+      const doId = env.CHAT_SESSIONS.idFromName(sessionId);
+      const stub = env.CHAT_SESSIONS.get(doId);
+      const resp = await stub.fetch('http://do/history');
+      const { history } = await resp.json();
+      return history || [];
+    } catch { /* fall through */ }
+  }
+  // KV fallback
+  try {
+    const stored = await env.KV.get(`chat_session:${sessionId}`);
+    return stored ? JSON.parse(stored) : [];
+  } catch { return []; }
+}
+
+async function saveSessionHistory(sessionId, history, env) {
+  const trimmed = history.slice(-MAX_CONVERSATION_TURNS * 2);
+  if (env.CHAT_SESSIONS) {
+    try {
+      const doId = env.CHAT_SESSIONS.idFromName(sessionId);
+      const stub = env.CHAT_SESSIONS.get(doId);
+      await stub.fetch('http://do/history', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history: trimmed }),
+      });
+      return;
+    } catch { /* fall through */ }
+  }
+  // KV fallback (7-day TTL)
+  await env.KV.put(`chat_session:${sessionId}`, JSON.stringify(trimmed), {
+    expirationTtl: 604800
+  }).catch(() => {});
+}
 
 // ── CHAT TOOLS (read-only queries across all D1 data) ─────────────────────────
 const CHAT_TOOLS = [
@@ -210,6 +248,13 @@ export default {
       return response;
     }
 
+    // Streaming endpoint — tool calls run first, final reply streams word-by-word
+    if (path === '/chat/stream' && request.method === 'POST') {
+      const response = await handleChatStream(request, env);
+      Object.entries(corsHeaders).forEach(([k, v]) => response.headers.set(k, v));
+      return response;
+    }
+
     if (path === '/chat/sessions') {
       return new Response(JSON.stringify({ message: 'Session list not implemented yet' }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
@@ -218,7 +263,15 @@ export default {
 
     if (path === '/chat/session' && request.method === 'DELETE') {
       const body = await request.json();
-      await env.KV.delete(`chat_session:${body.session_id}`);
+      const sid = body.session_id;
+      if (env.CHAT_SESSIONS && sid) {
+        try {
+          const doId = env.CHAT_SESSIONS.idFromName(sid);
+          const stub = env.CHAT_SESSIONS.get(doId);
+          await stub.fetch('http://do/history', { method: 'DELETE' });
+        } catch {}
+      }
+      await env.KV.delete(`chat_session:${sid}`).catch(() => {});
       return new Response(JSON.stringify({ cleared: true }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
@@ -239,17 +292,9 @@ async function handleChat(request, env) {
     });
   }
 
-  // Load or create session
+  // Load or create session (Durable Object — persistent, no TTL)
   const sessionId = session_id || crypto.randomUUID();
-  const sessionKey = `chat_session:${sessionId}`;
-  let history = [];
-
-  try {
-    const stored = await env.KV.get(sessionKey);
-    if (stored) history = JSON.parse(stored);
-  } catch {}
-
-  // Trim history to last N turns
+  let history = await loadSessionHistory(sessionId, env);
   if (history.length > MAX_CONVERSATION_TURNS * 2) {
     history = history.slice(-MAX_CONVERSATION_TURNS * 2);
   }
@@ -329,12 +374,142 @@ async function handleChat(request, env) {
     return m;
   });
 
-  await env.KV.put(sessionKey, JSON.stringify(storableHistory), {
-    expirationTtl: SESSION_TTL_SECONDS
-  });
+  await saveSessionHistory(sessionId, storableHistory, env);
 
   return new Response(JSON.stringify({ reply, session_id: sessionId }), {
     headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+// ── STREAMING CHAT HANDLER ───────────────────────────────────────────────────
+// Runs tool calls non-streamed, then streams the final text reply via SSE.
+// Client receives: data: {"type":"delta","text":"..."}\n\n
+//                  data: {"type":"done","session_id":"..."}\n\n
+async function handleChatStream(request, env) {
+  const body = await request.json();
+  const { message, session_id } = body;
+
+  if (!message?.trim()) {
+    return new Response('data: {"type":"error","error":"Message required"}\n\n', {
+      status: 400, headers: { 'Content-Type': 'text/event-stream' }
+    });
+  }
+
+  // Load or create session (Durable Object — persistent, no TTL)
+  const sessionId = session_id || crypto.randomUUID();
+  let history = await loadSessionHistory(sessionId, env);
+  if (history.length > MAX_CONVERSATION_TURNS * 2) {
+    history = history.slice(-MAX_CONVERSATION_TURNS * 2);
+  }
+  history.push({ role: 'user', content: message });
+
+  const messages = [...history];
+  let loops = 0;
+
+  // ── Phase 1: tool calls (non-streamed, fast) ────────────────────────────
+  while (loops < MAX_TOOL_LOOPS - 1) {
+    loops++;
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        system: CHAT_SYSTEM_PROMPT,
+        tools: CHAT_TOOLS,
+        messages,
+      }),
+    });
+    if (!resp.ok) break;
+    const data = await resp.json();
+    messages.push({ role: 'assistant', content: data.content });
+    if (data.stop_reason === 'end_turn') break; // no tools called — we're done before streaming
+    if (data.stop_reason !== 'tool_use') break;
+
+    const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
+    const toolResults = [];
+    for (const tu of toolUseBlocks) {
+      const result = await executeChatTool(tu.name, tu.input, env);
+      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) });
+    }
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  // ── Phase 2: stream the final reply ────────────────────────────────────
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+
+  const streamResp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'messages-2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      system: CHAT_SYSTEM_PROMPT,
+      tools: CHAT_TOOLS,
+      messages,
+      stream: true,
+    }),
+  });
+
+  // Pipe SSE stream, extract text deltas, save history when done
+  (async () => {
+    let fullText = '';
+    try {
+      const reader = streamResp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(raw);
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+              const chunk = evt.delta.text;
+              fullText += chunk;
+              await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`));
+            }
+          } catch {}
+        }
+      }
+    } finally {
+      // Save history
+      const cleanHistory = [
+        ...messages.filter(m =>
+          (m.role === 'user' && typeof m.content === 'string') ||
+          (m.role === 'assistant' && Array.isArray(m.content) && m.content.some(b => b.type === 'text'))
+        ),
+        ...(fullText ? [{ role: 'assistant', content: fullText }] : []),
+      ].slice(-MAX_CONVERSATION_TURNS * 2);
+      await saveSessionHistory(sessionId, cleanHistory, env);
+      await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'done', session_id: sessionId })}\n\n`));
+      await writer.close();
+    }
+  })();
+
+  return new Response(readable, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    },
   });
 }
 

@@ -17,8 +17,10 @@
  */
 
 import { default as scout }       from './scout-worker.js';
+export { OutreachApprovalWorkflow, CateringApprovalWorkflow } from './outreach-workflow.js';
+export { ChatSessionDO } from './chat-session-do.js';
 import { default as qualifier }   from './qualifier-worker.js';
-import { default as outreach }    from './outreach-agent.js';
+import { default as outreach, runSignalScanner }    from './outreach-agent.js';
 import { default as account }     from './account-worker.js';
 import { default as optimizer }   from './optimizer-worker.js';
 import { default as pilot }       from './pilot-tracker-worker.js';
@@ -32,6 +34,9 @@ import { default as coach }       from './coach-agent.js';
 import { default as qboWebhook } from './qbo-webhook-worker.js';
 import { default as cfoPulse }   from './cfo-pulse-worker.js';
 import { default as replyHandler } from './reply-handler-worker.js';
+import { default as orchestrator } from './orchestrator.js';
+import { default as squareSync } from './square-sync-worker.js';
+export { RetailBackfillWorkflow } from './retail-backfill-workflow.js';
 
 export default {
 
@@ -60,13 +65,13 @@ export default {
       ctx.waitUntil(qualifier.scheduled(event, env, ctx));
     }
 
-    // Tue + Thu 8am MT — Outreach (wholesale)
-    if (cron === '0 14 * * 2' || cron === '0 14 * * 4') {
+    // Tue + Wed + Thu + Fri 8am MT — Outreach (wholesale)
+    if (cron === '0 14 * * 2' || cron === '0 14 * * 3' || cron === '0 14 * * 4' || cron === '0 14 * * 5') {
       ctx.waitUntil(outreach.scheduled(event, env, ctx));
     }
 
-    // Mon + Wed 8am MT — Catering Agent
-    if (cron === '0 14 * * 1' || cron === '0 14 * * 3') {
+    // Mon + Wed + Fri 8am MT — Catering Agent
+    if (cron === '0 14 * * 1' || cron === '0 14 * * 3' || cron === '0 14 * * 5') {
       ctx.waitUntil(catering.scheduled(event, env, ctx));
     }
 
@@ -75,16 +80,29 @@ export default {
       ctx.waitUntil(account.scheduled(event, env, ctx));
     }
 
-    // Friday 8am MT — Pilot weekly check
+    // Friday 8am MT — Pilot weekly check (runs alongside outreach+catering)
     if (cron === '0 14 * * 5') {
       ctx.waitUntil(pilot.scheduled(event, env, ctx));
     }
 
-    // Daily 4am MT — Toast POS data sync + QBO wholesale invoice sync
+    // Daily 6:30am MT — Signal Scanner (timing hooks for outreach)
+    if (cron === '30 12 * * *') {
+      ctx.waitUntil(
+        runSignalScanner(env).catch(err =>
+          console.error('[Router] Signal Scanner failed:', err.message)
+        )
+      );
+    }
+
+    // Daily 4am MT — POS data sync + QBO wholesale invoice sync
     if (cron === '0 10 * * *') {
       ctx.waitUntil(account.scheduled(event, env, ctx));
       ctx.waitUntil(syncQBOInvoicesToD1(env).catch(err =>
         console.error('[Router] QBO invoice sync failed:', err.message)
+      ));
+      // Square daily sync (catches anything webhooks missed)
+      ctx.waitUntil(squareSync.scheduled(event, env, ctx).catch(err =>
+        console.error('[Router] Square daily sync failed:', err.message)
       ));
     }
 
@@ -166,8 +184,18 @@ export default {
     // Pipeline routes (outreach holds + flags — dashboard views)
     if (path.startsWith('/pipeline/')) return withCors(await outreach.fetch(request, env, ctx));
 
+    // SMS reply webhook (Swell CX inbound) — route to reply handler
+    if (path === '/sms/webhook') return withCors(await replyHandler.fetch(request, env, ctx));
+
     // Reply inbox (before outreach catch-all)
     if (path.startsWith('/replies/')) return withCors(await replyHandler.fetch(request, env, ctx));
+
+    // Account-worker endpoints under /outreach — must be before outreach catch-all
+    if (path === '/outreach/summer-stats' || path === '/outreach/summer-instagram-queue' || path === '/outreach/summer-venues'
+        || path === '/outreach/coach-voice' || path === '/outreach/redraft-all'
+        || path === '/outreach/voice-embed' || path === '/outreach/voice-scan' || path === '/outreach/voice-similar') {
+      return withCors(await account.fetch(request, env, ctx));
+    }
 
     // Outreach routes
     if (path.startsWith('/outreach/')) return withCors(await outreach.fetch(request, env, ctx));
@@ -197,7 +225,13 @@ export default {
     // QBO direct (test + debug + OAuth)
     if (path.startsWith('/qbo/')) return withCors(await qboClient.fetch(request, env, ctx));
 
-    // Retail Agent
+    // Square webhook (real-time order + customer events)
+    if (path === '/square/webhook' || path.startsWith('/square/')) return withCors(await squareSync.fetch(request, env, ctx));
+
+    // Swell opt-out webhook (STOP replies → sms_suppressions)
+    if (path === '/swell/webhook') return withCors(await retail.fetch(request, env, ctx));
+
+    // Retail Agent (includes backfill trigger)
     if (path.startsWith('/retail/')) return withCors(await retail.fetch(request, env, ctx));
 
     // Catering Agent
@@ -206,12 +240,23 @@ export default {
     // Coach Agent
     if (path.startsWith('/coach/')) return withCors(await coach.fetch(request, env, ctx));
 
+    // Agent activity feed (for Today dashboard page)
+    if (path === '/agent/activity') return withCors(await orchestrator.fetch(request, env, ctx));
+
+    // Orchestrator — pipeline coordination + agent activity log
+    if (path.startsWith('/orchestrator/')) return withCors(await orchestrator.fetch(request, env, ctx));
+
     // Chat
     if (path.startsWith('/chat')) return withCors(await chat.fetch(request, env, ctx));
 
     // Dashboard: quick D1 stats
     if (path === '/stats') {
       return withCors(await getStats(env));
+    }
+
+    // Pretzel Program landing page — redirect to Pages deployment
+    if (path === '/pretzel-program' || path === '/pretzel-program.html') {
+      return Response.redirect('https://pretzel-website-31s.pages.dev/pretzel-program.html', 302);
     }
 
     return new Response('Pretzel OS — dangerouspretzel.com', { status: 200, headers: corsHeaders });

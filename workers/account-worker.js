@@ -33,6 +33,14 @@ const REVIEW_DELAY_MINUTES = 20;    // Send review request 20min after order
 const TOAST_RESTAURANT_GUID = '6ddb1ae7-a325-4f9d-87d4-445951a97e37';
 const TOAST_REPORT_BASE = 'https://www.toasttab.com/restaurants/admin/reports';
 
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const digits = raw.replace(/[^\d]/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) return '+1' + digits.slice(1);
+  if (digits.length === 10) return '+1' + digits;
+  return null;
+}
+
 export default {
   async scheduled(event, env, ctx) {
     if (event.cron === '0 10 * * *') {
@@ -94,6 +102,11 @@ export default {
     // System notifications (cookie expired, sync failures, etc.)
     if (path === '/account/notifications') {
       return getNotifications(env);
+    }
+
+    // Inbound lead capture from pretzel-program.html website form
+    if (path === '/account/lead-capture' && request.method === 'POST') {
+      return handleLeadCapture(request, env);
     }
 
     // Check-in draft for yellow-health accounts (dashboard modal)
@@ -262,12 +275,258 @@ async function saveCookie() {
       });
     }
 
+    // DB migration — run once to create guestbook table
+    if (path === '/account/migrate') {
+      const results = [];
+      const migrations = [
+        `CREATE TABLE IF NOT EXISTS guestbook (
+          id TEXT PRIMARY KEY,
+          first_name TEXT,
+          last_name TEXT,
+          phone TEXT,
+          phone_raw TEXT,
+          email TEXT,
+          last_visit TEXT,
+          order_count INTEGER DEFAULT 0,
+          total_spend REAL DEFAULT 0,
+          source TEXT DEFAULT 'toast',
+          synced_at TEXT DEFAULT (datetime('now')),
+          matched_square_id TEXT
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_guestbook_phone ON guestbook(phone)`,
+        `CREATE INDEX IF NOT EXISTS idx_guestbook_name ON guestbook(first_name, last_name)`,
+        `ALTER TABLE guestbook ADD COLUMN total_spend REAL DEFAULT 0`,
+        `CREATE TABLE IF NOT EXISTS voice_corrections (
+          id TEXT PRIMARY KEY,
+          log_id TEXT,
+          venue_id TEXT,
+          original_subject TEXT,
+          edited_subject TEXT,
+          original_body TEXT,
+          edited_body TEXT,
+          optimizer_consumed_at TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_voice_corrections_unconsumed ON voice_corrections(optimizer_consumed_at) WHERE optimizer_consumed_at IS NULL`,
+        // Sprint 3-4: A/B subject variant tracking
+        `ALTER TABLE outreach_logs ADD COLUMN subject_variant TEXT`,
+        // Sprint 4: Auto-send reply scheduling
+        `ALTER TABLE inbound_replies ADD COLUMN auto_send_at TEXT`,
+        `CREATE INDEX IF NOT EXISTS idx_replies_auto_send ON inbound_replies(status, auto_send_at) WHERE status = 'auto_send_scheduled'`,
+        // Sprint 3: Signal Scanner — timing hooks for outreach
+        `CREATE TABLE IF NOT EXISTS timing_signals (
+          id TEXT PRIMARY KEY,
+          venue_id TEXT NOT NULL,
+          signal_type TEXT NOT NULL,
+          signal_score INTEGER DEFAULT 0,
+          signal_summary TEXT,
+          source TEXT,
+          raw_data TEXT,
+          consumed_at TEXT,
+          expires_at TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_signals_venue ON timing_signals(venue_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_signals_unconsumed ON timing_signals(consumed_at) WHERE consumed_at IS NULL`,
+        // Multi-channel outreach: SMS + Instagram DM
+        `ALTER TABLE venues ADD COLUMN contact_phone_verified INTEGER DEFAULT 0`,
+        `ALTER TABLE venues ADD COLUMN sms_opt_out INTEGER DEFAULT 0`,
+        `ALTER TABLE outreach_logs ADD COLUMN channel TEXT DEFAULT 'email'`,
+        `CREATE INDEX IF NOT EXISTS idx_outreach_channel ON outreach_logs(channel, venue_id)`,
+        `CREATE TABLE IF NOT EXISTS instagram_dm_queue (
+          id TEXT PRIMARY KEY,
+          venue_id TEXT NOT NULL,
+          venue_name TEXT,
+          instagram_handle TEXT NOT NULL,
+          message TEXT NOT NULL,
+          sequence_context TEXT,
+          status TEXT DEFAULT 'pending',
+          created_at TEXT DEFAULT (datetime('now')),
+          sent_at TEXT
+        )`,
+        `CREATE INDEX IF NOT EXISTS idx_dm_queue_status ON instagram_dm_queue(status)`,
+      ];
+      for (const sql of migrations) {
+        try { await env.DB.prepare(sql).run(); results.push({ sql: sql.slice(0, 60), ok: true }); }
+        catch (e) { results.push({ sql: sql.slice(0, 60), ok: false, error: e.message }); }
+      }
+      return new Response(JSON.stringify(results, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Manual trigger for daily review requests (uses guestbook pipeline)
+    // ?window=7d widens to 7-day lookback for one-time blasts
     if (path === '/account/review-batch') {
-      const result = await enrichAndSendReviews(env);
+      const windowParam = url.searchParams.get('window');
+      const windowHours = windowParam === '7d' ? 168 : 72;
+      const dryRun = url.searchParams.get('dry') === '1';
+      const clearCooldowns = url.searchParams.get('clear_cooldowns') === '1';
+
+      if (clearCooldowns && !dryRun) {
+        // Wipe review_cooldown KV keys from failed prior runs
+        const kvList = await env.KV.list({ prefix: 'review_cooldown:' });
+        let cleared = 0;
+        for (const key of kvList.keys) {
+          await env.KV.delete(key.name);
+          cleared++;
+        }
+        console.log(`[Account] Cleared ${cleared} review cooldown keys`);
+      }
+
+      const result = await enrichAndSendReviews(env, { windowHours, dryRun });
       return new Response(JSON.stringify(result, null, 2), {
         headers: { 'Content-Type': 'application/json' }
       });
+    }
+
+    // Null out corrupted last_visit dates where last_visit ≈ synced_at (the old fallback bug)
+    if (path === '/account/guestbook-cleanup') {
+      // Corrupted records have last_visit within 2 seconds of synced_at (both set during the same push)
+      const result = await env.DB.prepare(`
+        UPDATE guestbook SET last_visit = NULL
+        WHERE last_visit IS NOT NULL AND synced_at IS NOT NULL
+          AND abs(strftime('%s', last_visit) - strftime('%s', synced_at)) < 2
+      `).run();
+      const remaining = await env.DB.prepare('SELECT COUNT(*) as total FROM guestbook WHERE last_visit IS NOT NULL').first();
+      return new Response(JSON.stringify({
+        cleaned: result.meta?.changes || 0,
+        remaining_with_last_visit: remaining?.total || 0,
+      }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Re-sync D1 guestbook from cached KV CSV (fixes corrupted last_visit dates)
+    if (path === '/account/guestbook-resync') {
+      const csv = await env.KV.get('guestbook_csv');
+      if (!csv) return new Response(JSON.stringify({ error: 'No guestbook CSV in KV' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const lines = csv.split('\n');
+      const headers = parseCSVLine(lines[0]).map(h => h.trim());
+      const col = {};
+      for (const name of ['firstName', 'lastName', 'phone1', 'email', 'lastVisitDate', 'totalOrders', 'lifetimeSpend']) {
+        col[name] = headers.indexOf(name);
+      }
+      const stmts = [];
+      let count = 0;
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const f = parseCSVLine(line);
+        const firstName = col.firstName >= 0 ? (f[col.firstName] || '').trim() : '';
+        const lastName = col.lastName >= 0 ? (f[col.lastName] || '').trim() : '';
+        const rawPhone = col.phone1 >= 0 ? (f[col.phone1] || '').trim() : '';
+        const phone = normalizePhone(rawPhone);
+        const email = col.email >= 0 ? (f[col.email] || '').trim().toLowerCase() || null : null;
+        const lastVisit = col.lastVisitDate >= 0 ? (f[col.lastVisitDate] || '').trim() || null : null;
+        const orderCount = col.totalOrders >= 0 ? parseInt(f[col.totalOrders]) || 0 : 0;
+        const totalSpend = col.lifetimeSpend >= 0 ? parseFloat(f[col.lifetimeSpend]) || 0 : 0;
+        const id = phone || `nophone_${firstName}_${lastName}_${i}`.toLowerCase().replace(/\s+/g, '_');
+        stmts.push(
+          env.DB.prepare(`INSERT OR REPLACE INTO guestbook (id, first_name, last_name, phone, phone_raw, email, last_visit, order_count, total_spend, source, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'toast_resync', datetime('now'))`)
+            .bind(id, firstName, lastName, phone, rawPhone, email, lastVisit, orderCount, totalSpend)
+        );
+        count++;
+        // D1 batch limit is 128 statements
+        if (stmts.length >= 120) {
+          await env.DB.batch(stmts);
+          stmts.length = 0;
+        }
+      }
+      if (stmts.length > 0) await env.DB.batch(stmts);
+      return new Response(JSON.stringify({ success: true, resynced: count }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Manual guestbook refresh — pulls fresh CSV from Toast using stored cookie
+    if (path === '/account/guestbook-refresh') {
+      const cookie = await env.KV.get('toast_cookie_override') || env.TOAST_COOKIE;
+      if (!cookie) return new Response(JSON.stringify({ error: 'No Toast cookie configured' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const result = await refreshGuestbook(cookie, env);
+      return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Guestbook JSON push — accepts scraped guest data from browser/bookmarklet
+    // Format: POST [{name, phone, email, lastVisitDate, orders}]
+    // Writes to D1 guestbook table (permanent archive) using batch inserts for speed
+    if (path === '/account/guestbook-push' && request.method === 'POST') {
+      try {
+        const guests = await request.json();
+        if (!Array.isArray(guests)) return new Response(JSON.stringify({ error: 'Expected JSON array' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+        // Prepare all inserts as batch statements for speed
+        const stmts = [];
+        let withPhone = 0;
+        const phoneLookup = []; // {phone, name, firstName, lastName} for enrichment
+
+        for (const guest of guests) {
+          const parts = (guest.name || '').trim().split(/\s+/);
+          const firstName = (parts[0] || '').trim();
+          const lastName = (parts.slice(1).join(' ') || '').trim();
+          const phone = normalizePhone(guest.phone);
+          const phoneRaw = (guest.phone || '').trim();
+          const email = (guest.email || '').trim().toLowerCase() || null;
+          const lastVisit = guest.lastVisitDate || null;
+          const orderCount = parseInt(guest.orders) || 0;
+          const totalSpend = parseFloat(guest.totalSpend) || 0;
+          const id = phone || `nophone_${firstName}_${lastName}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`.toLowerCase().replace(/\s+/g, '_');
+
+          stmts.push(
+            env.DB.prepare(`INSERT OR REPLACE INTO guestbook (id, first_name, last_name, phone, phone_raw, email, last_visit, order_count, total_spend, source, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'toast', datetime('now'))`)
+              .bind(id, firstName, lastName, phone, phoneRaw, email, lastVisit, orderCount, totalSpend)
+          );
+          if (phone) {
+            withPhone++;
+            if (guest.name) phoneLookup.push({ phone, name: guest.name.trim(), firstName, lastName });
+          }
+        }
+
+        // Execute all inserts in one D1 batch (much faster than sequential)
+        await env.DB.batch(stmts);
+
+        // Bulk enrichment: update recent orders that match guestbook names
+        let enriched = 0;
+        for (const { phone, name, firstName, lastName } of phoneLookup) {
+          const exactResult = await env.DB.prepare(`
+            UPDATE orders SET customer_phone = ?
+            WHERE customer_name = ? AND customer_phone IS NULL
+            AND order_date >= datetime('now', '-7 days')
+          `).bind(phone, name).run();
+          if (exactResult.meta?.changes > 0) { enriched += exactResult.meta.changes; continue; }
+          // Fuzzy: first name + last initial
+          if (firstName && lastName) {
+            const fuzzy = await env.DB.prepare(`
+              UPDATE orders SET customer_phone = ?
+              WHERE customer_phone IS NULL AND order_date >= datetime('now', '-7 days')
+              AND customer_name LIKE ? || '%' AND customer_name LIKE '% ' || ? || '%'
+            `).bind(phone, firstName, lastName.charAt(0)).run();
+            if (fuzzy.meta?.changes > 0) enriched += fuzzy.meta.changes;
+          }
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          guests_stored: guests.length,
+          guests_with_phone: withPhone,
+          orders_enriched: enriched,
+          message: `Archived ${guests.length} guests (${withPhone} with phone), enriched ${enriched} recent orders`,
+        }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // SLICC uploads guestbook CSV directly (browser-side download → push to Worker)
+    // SLICC navigates to /crm/guestbook in Chrome, clicks Export, reads the file, POSTs here
+    if (path === '/account/guestbook-upload' && request.method === 'POST') {
+      const csv = await request.text();
+      if (!csv || csv.length < 100) {
+        return new Response(JSON.stringify({ error: 'CSV too short or empty' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Accept guestbook CSV (has firstName column) or loyalty CSV (has first_name)
+      const hasGuestbookHeaders = csv.includes('firstName') || csv.includes('first_name') || csv.includes('phone') || csv.includes('Phone');
+      if (!hasGuestbookHeaders) {
+        return new Response(JSON.stringify({ error: 'CSV does not look like a guestbook file', preview: csv.slice(0, 200) }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      await env.KV.put('guestbook_csv', csv, { expirationTtl: 7776000 }); // 90 days
+      const lineCount = csv.split('\n').filter(l => l.trim()).length - 1;
+      console.log(`[Account] Guestbook uploaded by SLICC: ${lineCount} guests`);
+      return new Response(JSON.stringify({ success: true, guests: lineCount }), { headers: { 'Content-Type': 'application/json' } });
     }
 
     // Debug: check guestbook freshness
@@ -287,13 +546,141 @@ async function saveCookie() {
           if (!isNaN(d.getTime()) && d.getTime() >= cutoff) recentCount++;
         }
       }
+      // Also query D1 for actual guestbook table stats
+      const d1Total = await env.DB.prepare('SELECT COUNT(*) as total FROM guestbook').first();
+      const d1WithPhone = await env.DB.prepare('SELECT COUNT(*) as total FROM guestbook WHERE phone IS NOT NULL AND phone != ""').first();
+      const d1WithVisit = await env.DB.prepare('SELECT COUNT(*) as total FROM guestbook WHERE last_visit IS NOT NULL').first();
+      const d1WithSpend = await env.DB.prepare('SELECT COUNT(*) as total FROM guestbook WHERE total_spend > 0').first();
+      const d1Recent7d = await env.DB.prepare("SELECT COUNT(*) as total FROM guestbook WHERE last_visit IS NOT NULL AND last_visit >= datetime('now', '-7 days')").first();
+
       return new Response(JSON.stringify({
-        status: 'cached',
-        total_guests: lines.length - 1,
-        columns: headers,
-        visitors_last_24h: recentCount,
-        has_lastVisitDate: lastVisitCol >= 0,
+        kv_csv: {
+          total_guests: lines.length - 1,
+          columns: headers,
+          visitors_last_24h: recentCount,
+          has_lastVisitDate: lastVisitCol >= 0,
+        },
+        d1_guestbook: {
+          total: d1Total?.total || 0,
+          with_phone: d1WithPhone?.total || 0,
+          with_last_visit: d1WithVisit?.total || 0,
+          with_total_spend: d1WithSpend?.total || 0,
+          visited_last_7d: d1Recent7d?.total || 0,
+        },
       }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Summer 2026 campaign stats — used by dashboard
+    if (path === '/outreach/summer-stats') {
+      const row = await env.DB.prepare(`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'contacted' THEN 1 ELSE 0 END) as contacted,
+          SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) as replied,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+          SUM(CASE WHEN contact_email IS NULL AND status = 'prospect' THEN 1 ELSE 0 END) as needs_instagram
+        FROM venues
+        WHERE campaign = 'summer_2026'
+      `).first();
+      return new Response(JSON.stringify(row || { total: 0, contacted: 0, replied: 0, active: 0, needs_instagram: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Summer venues list — all summer_2026 campaign venues with status + contacts
+    if (path === '/outreach/summer-venues') {
+      const rows = await env.DB.prepare(`
+        SELECT id, name, city, tier, category, status, campaign,
+               contact_name, contact_email, contact_title, contact_instagram,
+               contact_method_note, notes,
+               CAST(julianday('now') - julianday(updated_at) AS INTEGER) as days_since_update
+        FROM venues
+        WHERE campaign = 'summer_2026'
+        ORDER BY
+          CASE status WHEN 'active' THEN 0 WHEN 'replied' THEN 1 WHEN 'contacted' THEN 2 ELSE 3 END,
+          tier ASC, name ASC
+      `).all();
+      return new Response(JSON.stringify(rows.results || []), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Summer Instagram DM queue — venues where no email found, Drew sends manually
+    if (path === '/outreach/summer-instagram-queue') {
+      const rows = await env.DB.prepare(`
+        SELECT id, name, city, tier, category, contact_instagram, notes
+        FROM venues
+        WHERE campaign = 'summer_2026'
+          AND contact_instagram IS NOT NULL
+          AND status = 'prospect'
+        ORDER BY tier ASC, created_at ASC
+      `).all();
+
+      const DM_TEMPLATE = (name, category) => {
+        if (category === 'golf') {
+          return `Hey ${name} — quick question: who handles F&B or concessions at the club?\n\nWe supply the pretzel warmer at Delta Center and SLC Bees — thinking the 19th hole angle could work well for you. Free warmer, pretzels wholesale, zero kitchen needed.\n\nWorth a quick chat? Happy to drop samples.\n\nDrew @ Dangerous Pretzel\n801.916.9122`;
+        }
+        if (category === 'brewery') {
+          return `Hey ${name} — we already supply TF Brewery, Hopkins, ROHA, and HK Brewing in SLC.\n\nJust wondering if you've ever looked at adding pretzels to the taproom? We do a free warmer trial — zero commitment, see if it moves.\n\nDrew @ Dangerous Pretzel\n801.916.9122`;
+        }
+        if (category === 'fairgrounds' || category === 'other') {
+          return `Hey ${name} — we're doing pretzel programs at Sandy Amphitheater and Delta Center this summer. Looking for a couple more event venues.\n\nFree warmer, pretzels wholesale — we could do a trial run at one of your summer events if the timing works.\n\nDrew @ Dangerous Pretzel\n801.916.9122`;
+        }
+        // Default: outdoor/summer venue
+        return `Hey ${name} — love what you do with your summer programming.\n\nQuick question: who handles your concession/food vendors for events? We're working with Sandy Amphitheater and The Union Event Center this summer and wondering if you'd be open to a conversation.\n\nWe make pretzels. Sounds simple — it's a little more interesting than that. Happy to share details if there's a fit.\n\nDrew @ Dangerous Pretzel\n801.916.9122`;
+      };
+
+      const result = (rows.results || []).map(v => ({
+        ...v,
+        dm_template: DM_TEMPLATE(v.name, v.category),
+        instagram_url: v.contact_instagram ? `https://instagram.com/${v.contact_instagram.replace('@', '')}` : null,
+      }));
+
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Coach voice — redraft all pending outreach emails with Drew's feedback
+    if (path === '/outreach/coach-voice' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        if (!body.feedback) {
+          return new Response(JSON.stringify({ error: 'feedback required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+        const result = await redraftPendingEmails(env, body.feedback);
+        return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // Redraft all — same logic with default feedback message
+    if (path === '/outreach/redraft-all' && request.method === 'POST') {
+      try {
+        const defaultFeedback = 'Rewrite to be friendly, casual, and local. We make really great unique pretzels people at this venue would love and talk about. We have made it super easy to offer. The only ask is: can I bring some by for the team to try? Remove all mechanical language (warmer model, trial run, one night, pick up the warmer). Add a P.S. line at the end: "P.S. See how other venues are running it: https://program.dangerouspretzel.com/pretzel-program" — keep the body itself under 130 words, P.S. is separate.';
+        const result = await redraftPendingEmails(env, defaultFeedback);
+        return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // ── Voice Embedding (Vectorize) ──────────────────────────────────────
+    // Embed + upsert a single sent email into Vectorize
+    if (path === '/account/voice-embed' && request.method === 'POST') {
+      return handleVoiceEmbed(request, env);
+    }
+
+    // Batch embed the last N approved sent emails from outreach_logs
+    if (path === '/account/voice-scan') {
+      const limit = parseInt(url.searchParams.get('limit') || '50');
+      return handleVoiceScan(env, limit);
+    }
+
+    // Retrieve N similar emails given venue_category + hook_angle text
+    if (path === '/account/voice-similar') {
+      const query = url.searchParams.get('q') || '';
+      const k = parseInt(url.searchParams.get('k') || '3');
+      return handleVoiceSimilar(env, query, k);
     }
 
     // Customer list from D1
@@ -579,69 +966,76 @@ async function scheduleReviewRequest(phone, venueName, orderId, env) {
   await sendReviewSMS(phone, venueName, orderId, env);
 }
 
-async function sendReviewSMS(phone, venueName, orderId, env) {
-  try {
-    const token = env.SWELLCX_API_KEY;
-    const SWELL_LOCATION_ID = 17640;
-    const SWELL_CAMPAIGN_ID = 32823; // "Review Invite" campaign
+async function sendReviewSMS(phone, customerName, orderId, env) {
+  const token = env.SWELLCX_API_KEY;
+  const SWELL_LOCATION_ID = 17640;
+  const SWELL_CAMPAIGN_ID = 32823; // "Review Invite" campaign
 
-    // Step 1: Find or create the contact in Swell by phone
-    const cleanPhone = phone.replace(/[^0-9]/g, '').replace(/^1/, ''); // strip +1 and non-digits
-    const searchResp = await fetch(
-      `https://platform.swellcx.com/api/v1/contacts?token=${token}&phone=${cleanPhone}`,
-      { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
-    );
-    const searchData = await searchResp.json();
-    let contactId = searchData.data?.[0]?.id;
+  // Step 1: Find or create the contact in Swell by phone
+  const cleanPhone = phone.replace(/[^0-9]/g, '').replace(/^1/, ''); // strip +1 and non-digits
+  const searchResp = await fetch(
+    `https://platform.swellcx.com/api/v1/contacts?token=${token}&phone=${cleanPhone}`,
+    { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
+  );
+  if (!searchResp.ok) {
+    const err = await searchResp.text();
+    throw new Error(`Swell contact search failed (${searchResp.status}): ${err}`);
+  }
+  const searchData = await searchResp.json();
+  let contactId = searchData.data?.[0]?.id;
 
-    if (!contactId) {
-      // Create the contact
-      const createResp = await fetch('https://platform.swellcx.com/api/v1/contacts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({
-          token,
-          phone: cleanPhone,
-          locations: [SWELL_LOCATION_ID],
-          country_code: 'US',
-        }),
-      });
-      const createData = await createResp.json();
-      contactId = createData.data?.id || createData.id;
-      if (!contactId) throw new Error('Failed to create Swell contact: ' + JSON.stringify(createData));
-    }
-
-    // Step 2: Send the review invite via the campaign
-    const inviteResp = await fetch('https://platform.swellcx.com/api/v1/invites', {
+  if (!contactId) {
+    // Create the contact — Swell requires a name field
+    const contactName = (customerName && customerName !== 'Guest') ? customerName : `Customer ${cleanPhone.slice(-4)}`;
+    const createResp = await fetch('https://platform.swellcx.com/api/v1/contacts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({
         token,
-        location_id: SWELL_LOCATION_ID,
-        campaign_id: SWELL_CAMPAIGN_ID,
-        contact_id: contactId,
-        override: true, // bypass Swell's cooldown — we manage our own 30-day cooldown in D1
+        name: contactName,
+        phone: cleanPhone,
+        locations: [SWELL_LOCATION_ID],
+        country_code: 'US',
       }),
     });
-
-    if (!inviteResp.ok) {
-      const err = await inviteResp.text();
-      throw new Error(`Swell invite API error: ${err}`);
+    if (!createResp.ok) {
+      const err = await createResp.text();
+      throw new Error(`Swell contact create failed (${createResp.status}): ${err}`);
     }
+    const createData = await createResp.json();
+    contactId = createData.data?.id || createData.id;
+    if (!contactId) throw new Error('Failed to create Swell contact: ' + JSON.stringify(createData));
+  }
 
-    // Mark order as review requested
+  // Step 2: Send the review invite via the campaign
+  const inviteResp = await fetch('https://platform.swellcx.com/api/v1/invites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      token,
+      location_id: SWELL_LOCATION_ID,
+      campaign_id: SWELL_CAMPAIGN_ID,
+      contact_id: contactId,
+      override: true, // bypass Swell's cooldown — we manage our own 30-day cooldown in D1
+    }),
+  });
+
+  if (!inviteResp.ok) {
+    const err = await inviteResp.text();
+    throw new Error(`Swell invite API error (${inviteResp.status}): ${err}`);
+  }
+
+  // Mark order as review requested (skip if no orderId — guestbook-only sends)
+  if (orderId) {
     await env.DB.prepare(`
       UPDATE orders
       SET review_requested_at = datetime('now'),
           review_request_method = 'sms'
       WHERE id = ?
     `).bind(orderId).run();
-
-    console.log(`[Account] Swell review invite sent to ${phone.slice(0, 6)}*** (contact ${contactId})`);
-
-  } catch (err) {
-    console.error('[Account] Review invite failed:', err.message);
   }
+
+  console.log(`[Account] Swell review invite sent to ${phone.slice(0, 6)}*** (contact ${contactId})`);
 }
 
 async function generateReviewMessage(venueName, env) {
@@ -657,134 +1051,85 @@ async function generateReviewMessage(venueName, env) {
 
 // ── DAILY REVIEW PIPELINE (2pm MT) ───────────────────────────────────────────
 
-async function enrichAndSendReviews(env) {
-  console.log('[Account] Running daily review pipeline...');
+async function enrichAndSendReviews(env, opts = {}) {
+  const windowHours = opts.windowHours || 72;
+  const dryRun = opts.dryRun || false;
+  console.log(`[Account] Running review pipeline (window: ${windowHours}h, dry: ${dryRun})...`);
 
-  // STRATEGY:
-  // 1. Use D1 orders (synced daily at 4am from Toast) as the recency filter
-  //    → orders from last 24 hours tell us WHO visited recently
-  // 2. Use the guestbook CSV (cached in KV) as the phone/email lookup
-  //    → guestbook maps customer names to phone numbers
-  // 3. For orders that already have phone numbers (from prior enrichment), use directly
-  // 4. For orders without phones, look up by name in guestbook
-  // This way we don't depend on guestbook lastVisitDate being fresh.
+  // STRATEGY: D1 orders table is the sole source of review-eligible customers.
+  // The check details report (pulled daily at 4am) captures customer_phone for every
+  // loyalty member who orders. Only verified buyers get review requests.
 
-  // Step 1: Get recent orders (last 24h) from D1
-  const recentOrders = await env.DB.prepare(`
-    SELECT id, customer_name, customer_phone, customer_email, order_date, gross_revenue
-    FROM orders
-    WHERE order_date >= datetime('now', '-24 hours')
-      AND customer_name IS NOT NULL
-      AND customer_name != ''
-    ORDER BY order_date DESC
+  const eligible = [];
+
+  // PRIMARY: D1 orders with phones in the lookback window
+  const recentWithPhone = await env.DB.prepare(`
+    SELECT customer_phone, customer_name FROM orders
+    WHERE customer_phone IS NOT NULL AND customer_phone != ''
+      AND order_date >= datetime('now', '-${windowHours} hours')
+      AND (source IS NULL OR source NOT IN ('qbo_wholesale', 'qbo_invoice', 'toast_catering'))
+      AND (customer_name IS NULL
+        OR (customer_name NOT LIKE 'DD %'
+        AND customer_name NOT LIKE 'UBER%'
+        AND customer_name NOT LIKE '%Grubhub%'))
+    GROUP BY customer_phone
   `).all();
 
-  const orders = recentOrders.results || [];
-  console.log(`[Account] Found ${orders.length} orders in last 24 hours`);
-  if (orders.length === 0) return { sent: 0, skipped: 0, eligible: 0 };
+  for (const row of (recentWithPhone.results || [])) {
+    eligible.push({ phone: row.customer_phone, name: row.customer_name || 'Guest', source: 'orders' });
+  }
+  const fromOrders = eligible.length;
+  console.log(`[Account] ${fromOrders} D1 orders with phones in last ${windowHours}h`);
 
-  // Step 2: Build guestbook name→phone lookup for orders missing phone
-  let guestLookup = new Map();
-  const cachedGuestbook = await env.KV.get('guestbook_csv');
-  if (cachedGuestbook) {
-    const lines = cachedGuestbook.split('\n');
-    const headers = parseCSVLine(lines[0]).map(h => h.trim());
-    const col = {};
-    for (const name of ['email1', 'phone1', 'firstName', 'lastName']) {
-      col[name] = headers.indexOf(name);
-    }
+  // SUPPLEMENTARY: guestbook contacts with a verified last_visit in the window
+  // Catches customers whose order in D1 didn't have a phone attached
+  const d1Phones = new Set(eligible.map(e => {
+    const n = normalizePhone(e.phone);
+    return n ? n.replace(/\D/g, '') : e.phone.replace(/\D/g, '');
+  }));
+  const guestbookRecent = await env.DB.prepare(`
+    SELECT phone, first_name, last_name FROM guestbook
+    WHERE phone IS NOT NULL AND phone != ''
+      AND last_visit IS NOT NULL
+      AND last_visit >= datetime('now', '-${windowHours} hours')
+  `).all();
+  let guestbookHits = 0;
+  for (const row of (guestbookRecent.results || [])) {
+    const norm = normalizePhone(row.phone);
+    const digits = norm ? norm.replace(/\D/g, '') : row.phone.replace(/\D/g, '');
+    if (d1Phones.has(digits)) continue; // already covered by orders
+    d1Phones.add(digits);
+    const name = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Guest';
+    eligible.push({ phone: row.phone, name, source: 'guestbook' });
+    guestbookHits++;
+  }
+  console.log(`[Account] ${guestbookHits} additional from guestbook table`);
 
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      const fields = parseCSVLine(line);
-      const phone = col.phone1 >= 0 ? fields[col.phone1]?.trim() : null;
-      const email = col.email1 >= 0 ? fields[col.email1]?.trim() : null;
-      const firstName = col.firstName >= 0 ? fields[col.firstName]?.trim() : null;
-      const lastName = col.lastName >= 0 ? fields[col.lastName]?.trim() : null;
-      if (!phone || phone.length < 10) continue;
-      // Full name match (primary)
-      const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-      if (fullName && firstName && lastName) {
-        guestLookup.set(fullName.toLowerCase(), { phone, email });
-      }
-      // First name match (secondary — only used when first name is uncommon)
-      // Store as array since multiple guests can share a first name
-      if (firstName && firstName.length > 2) {
-        const key = `__first__${firstName.toLowerCase()}`;
-        if (!guestLookup.has(key)) {
-          guestLookup.set(key, { phone, email, ambiguous: false });
-        } else {
-          // Multiple guests with same first name — mark ambiguous, don't use
-          guestLookup.set(key, { ...guestLookup.get(key), ambiguous: true });
-        }
-      }
-    }
-    console.log(`[Account] Guestbook lookup built: ${guestLookup.size} entries`);
-  } else {
-    console.log('[Account] No guestbook in KV — will only use orders with existing phone numbers');
+  if (eligible.length === 0) {
+    return dryRun
+      ? { dry_run: true, window_hours: windowHours, from_orders: fromOrders, from_guestbook: guestbookHits, total_eligible: 0, would_send: 0, blocked_by_cooldown: 0, skipped: 0, contacts: [] }
+      : { sent: 0, skipped: 0, cooldown: 0, eligible: 0 };
   }
 
-  // Step 3: Build eligible list — orders with phones (direct or via guestbook lookup)
-  const eligible = [];
-  let enriched = 0;
-
-  for (const order of orders) {
-    let phone = order.customer_phone;
-    let name = order.customer_name;
-
-    // Skip delivery driver orders (DoorDash, Uber Eats)
-    if (name && (name.startsWith('DD ') || name.startsWith('UBER'))) continue;
-    // Skip wholesale/QBO orders — they're B2B, not review candidates
-    if (order.source === 'qbo_wholesale' || order.source === 'qbo_invoice') continue;
-    // Skip very small orders (< $5) — likely just a drink
-    if (order.gross_revenue && order.gross_revenue < 5) continue;
-
-    // If no phone on order, try guestbook lookup
-    if (!phone || phone.length < 10) {
-      // Try full name first
-      let guest = guestLookup.get(name?.toLowerCase());
-      // If no full-name match, try first-name-only (if unambiguous in guestbook)
-      if (!guest && name) {
-        const firstName = name.split(' ')[0];
-        if (firstName && firstName.length > 2) {
-          const firstGuest = guestLookup.get(`__first__${firstName.toLowerCase()}`);
-          if (firstGuest && !firstGuest.ambiguous) {
-            guest = firstGuest;
-          }
-        }
-      }
-      if (guest) {
-        phone = guest.phone;
-        // Also update the order in D1 for future use
-        await env.DB.prepare(
-          'UPDATE orders SET customer_phone = ?, customer_email = COALESCE(?, customer_email) WHERE id = ?'
-        ).bind(phone, guest.email || null, order.id).run();
-        enriched++;
-      }
-    }
-
-    if (!phone || phone.length < 10) continue;
-    eligible.push({ phone, name, orderId: order.id });
-  }
-
-  console.log(`[Account] ${eligible.length} eligible for review (${enriched} enriched from guestbook)`);
-  if (eligible.length === 0) return { sent: 0, skipped: 0, enriched, eligible: 0 };
-
-  // Step 4: Send review requests with cooldown + dedup
+  // Send (or dry-run) with dedup + cooldown
   let sent = 0, skipped = 0, cooldown = 0;
   const processedPhones = new Set();
+  const dryContacts = [];
+  const errors = [];
 
-  for (const { phone: rawPhone, name, orderId } of eligible) {
-    const phone = rawPhone.startsWith('+') ? rawPhone : '+1' + rawPhone.replace(/\D/g, '');
+  for (const { phone: rawPhone, name, source } of eligible) {
+    const phone = normalizePhone(rawPhone);
+    if (!phone) { skipped++; continue; }
     const digits = phone.replace(/\D/g, '');
-    if (digits.length < 10) { skipped++; continue; }
 
-    // Dedupe within batch
     if (processedPhones.has(digits)) { skipped++; continue; }
     processedPhones.add(digits);
 
-    // Check 30-day cooldown in D1
+    // KV cooldown check (30 days)
+    const kvCooldown = await env.KV.get(`review_cooldown:${digits}`);
+    if (kvCooldown) { cooldown++; continue; }
+
+    // D1 cooldown check
     const recent = await env.DB.prepare(`
       SELECT id FROM orders
       WHERE customer_phone IN (?, ?)
@@ -792,31 +1137,45 @@ async function enrichAndSendReviews(env) {
         AND datetime(review_requested_at) > datetime('now', '-${REVIEW_COOLDOWN_DAYS} days')
       LIMIT 1
     `).bind(phone, rawPhone).first();
-
     if (recent) { cooldown++; continue; }
 
-    // Also check KV cooldown
-    const kvCooldown = await env.KV.get(`review_cooldown:${digits}`);
-    if (kvCooldown) { cooldown++; continue; }
+    if (dryRun) {
+      dryContacts.push({ phone: phone.slice(0, 6) + '****', name, source });
+      sent++;
+      continue;
+    }
 
     try {
-      await sendReviewSMS(phone, null, orderId, env);
-
-      // Set KV cooldown
+      await sendReviewSMS(phone, name, null, env);
       await env.KV.put(`review_cooldown:${digits}`, new Date().toISOString(), {
         expirationTtl: REVIEW_COOLDOWN_DAYS * 86400,
       });
-
       sent++;
-      console.log(`[Account] Review invite sent to ${name || 'Guest'} (${phone.slice(0, 6)}***)`);
+      console.log(`[Account] Review invite sent to ${name} (${phone.slice(0, 6)}***)`);
     } catch (err) {
       console.error(`[Account] Review SMS failed for ${phone.slice(0, 6)}***: ${err.message}`);
+      if (errors.length < 5) errors.push({ phone: phone.slice(0, 6) + '****', error: err.message });
       skipped++;
     }
   }
 
-  console.log(`[Account] Review batch: ${sent} sent, ${skipped} skipped, ${cooldown} on cooldown (from ${eligible.length} eligible)`);
-  return { sent, skipped, cooldown, enriched, eligible: eligible.length };
+  if (dryRun) {
+    return {
+      dry_run: true,
+      window_hours: windowHours,
+      from_orders: fromOrders,
+      from_guestbook: guestbookHits,
+      total_eligible: eligible.length,
+      after_dedup: processedPhones.size + skipped,
+      blocked_by_cooldown: cooldown,
+      skipped,
+      would_send: sent,
+      contacts: dryContacts,
+    };
+  }
+
+  console.log(`[Account] Review batch: ${sent} sent, ${skipped} skipped, ${cooldown} on cooldown`);
+  return { sent, skipped, cooldown, eligible: eligible.length, errors };
 }
 
 async function runDailyReviewRequests(env) {
@@ -953,23 +1312,39 @@ Rules:
 
 Return JSON: {subject, body}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  // Try Workers AI first (free, no egress) — fall back to claude-haiku
+  let text = null;
+  if (env.AI) {
+    try {
+      const aiResp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages: [
+          { role: 'system', content: 'You are a JSON email writer. Return valid JSON only, no markdown.' },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 300,
+      });
+      text = aiResp?.response || null;
+    } catch { text = null; }
+  }
 
-  if (!response.ok) return;
-  const data = await response.json();
-  const text = data.content?.[0]?.text || '';
+  if (!text) {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    text = data.content?.[0]?.text || '';
+  }
 
   try {
     const clean = text.replace(/```json\n?|\n?```/g, '').trim();
@@ -1317,7 +1692,7 @@ async function syncToastData(env, days = 1) {
   if (totalInserted === 0 && days <= 2) {
     // Set a persistent notification in KV
     await env.KV.put('notification:cookie_expired', JSON.stringify({
-      type: 'warning',
+      type: 'cookie_expired',
       title: 'Toast cookie expired',
       message: 'Daily sync failed — no orders pulled. Update your Toast cookie.',
       action: 'POST /account/update-cookie with your fresh cookie string',
@@ -1346,18 +1721,38 @@ async function syncToastData(env, days = 1) {
 async function refreshGuestbook(cookie, env) {
   console.log('[Account] Refreshing guestbook from Toast...');
   try {
-    // Toast guestbook CSV export endpoint
-    const exportUrl = 'https://www.toasttab.com/restaurants/admin/loyalty/guests/export';
-    const resp = await fetch(exportUrl, {
-      headers: { cookie, 'Accept': 'text/csv,*/*' },
-      redirect: 'manual',
-    });
+    // Try multiple known URL patterns (Toast moved guestbook from /loyalty/guests to /crm/guestbook)
+    // The export may redirect to S3 (202) or return CSV directly
+    const exportCandidates = [
+      'https://www.toasttab.com/restaurants/admin/crm/guestbook/export',
+      'https://www.toasttab.com/restaurants/admin/loyalty/guests/export',
+    ];
+
+    let exportUrl = exportCandidates[0];
+    let resp = null;
+
+    for (const url of exportCandidates) {
+      resp = await fetch(url, {
+        headers: { cookie, 'Accept': 'text/csv,*/*', 'Referer': 'https://www.toasttab.com/restaurants/admin/crm/guestbook' },
+        redirect: 'manual',
+      });
+      exportUrl = url;
+      // If we get a redirect or non-HTML response, this is the right URL
+      const ct = resp.headers.get('content-type') || '';
+      if (resp.status === 302 || resp.status === 301 || resp.status === 303 || resp.status === 307 || ct.includes('csv') || ct.includes('octet')) break;
+      // 200 text/html = admin SPA page, not CSV — try next URL
+      if (resp.ok && ct.includes('html')) continue;
+      break;
+    }
 
     // Toast may redirect to S3 (same pattern as reports) or return CSV directly
-    if (resp.status === 302 || resp.status === 301) {
-      const location = resp.headers.get('location');
-      if (location) {
-        const csvResp = await fetch(location);
+    const exportStatus = resp.status;
+    const exportLocation = resp.headers.get('location');
+    const exportContentType = resp.headers.get('content-type') || '';
+
+    if (resp.status === 302 || resp.status === 301 || resp.status === 303 || resp.status === 307) {
+      if (exportLocation) {
+        const csvResp = await fetch(exportLocation);
         if (csvResp.ok) {
           const csv = await csvResp.text();
           if (csv && csv.includes('firstName') && csv.length > 100) {
@@ -1366,7 +1761,9 @@ async function refreshGuestbook(cookie, env) {
             console.log(`[Account] Guestbook refreshed: ${lineCount} guests`);
             return { success: true, guests: lineCount };
           }
+          return { success: false, error: 'redirect_csv_invalid', redirect_status: csvResp.status, preview: csv.slice(0, 200) };
         }
+        return { success: false, error: 'redirect_fetch_failed', redirect_url: exportLocation, redirect_status: csvResp?.status };
       }
     } else if (resp.ok) {
       const csv = await resp.text();
@@ -1376,6 +1773,7 @@ async function refreshGuestbook(cookie, env) {
         console.log(`[Account] Guestbook refreshed: ${lineCount} guests`);
         return { success: true, guests: lineCount };
       }
+      return { success: false, error: 'export_200_not_csv', content_type: exportContentType, preview: csv.slice(0, 200) };
     }
 
     // If export didn't work, try the guestbook page and parse for a download link
@@ -1403,8 +1801,8 @@ async function refreshGuestbook(cookie, env) {
       }
     }
 
-    console.log('[Account] Guestbook refresh: could not download CSV (cookie may lack access)');
-    return { success: false, error: 'download_failed' };
+    console.log('[Account] Guestbook refresh: could not download CSV (cookie may lack access or export is client-side only)');
+    return { success: false, error: 'download_failed', tried_url: exportUrl, export_status: exportStatus, export_location: exportLocation, content_type: exportContentType, note: 'Export may be client-side. Use SLICC to POST CSV to /account/guestbook-upload instead.' };
   } catch (err) {
     console.error('[Account] Guestbook refresh error:', err.message);
     return { success: false, error: err.message };
@@ -2229,7 +2627,7 @@ async function handleGuestbookUpload(request, env) {
 async function getNotifications(env) {
   // Check all notification keys in KV
   const notifications = [];
-  const keys = ['notification:cookie_expired', 'notification:sync_error', 'notification:review_error'];
+  const keys = ['notification:cookie_expired', 'notification:sync_error', 'notification:review_error', 'notification:inbound_lead'];
   for (const key of keys) {
     const val = await env.KV.get(key);
     if (val) {
@@ -2243,11 +2641,128 @@ async function getNotifications(env) {
   }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 }
 
+async function handleLeadCapture(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400 }); }
+
+  const { venue_name, contact_name, email, phone, venue_type, city, notes } = body;
+  if (!venue_name || !email) {
+    return new Response(JSON.stringify({ error: 'venue_name and email required' }), { status: 400 });
+  }
+
+  // Map form venue_type to venues.category
+  const categoryMap = {
+    'Amphitheater / Outdoor Concert': 'other',
+    'Ski Resort / Mountain Resort': 'ski_resort',
+    'Brewery / Taproom': 'brewery',
+    'Stadium / Arena': 'stadium',
+    'Event Venue / Banquet Hall': 'event_venue',
+    'Hotel / Bar': 'hotel_bar',
+    'Golf Club / Country Club': 'golf',
+    'Festival / Fairgrounds': 'other',
+    'Other Venue': 'other',
+  };
+  const category = categoryMap[venue_type] || 'other';
+
+  const id = `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  await env.DB.prepare(`
+    INSERT INTO venues (id, name, category, contact_name, contact_email, contact_phone, city, notes, status, campaign, tier, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'inbound', 'website', 1, datetime('now'))
+  `).bind(id, venue_name, category, contact_name || null, email, phone || null, city || null, notes || null).run();
+
+  // KV notification for Drew dashboard
+  await env.KV.put('notification:inbound_lead', JSON.stringify({
+    type: 'inbound_lead',
+    title: `New inbound lead: ${venue_name}`,
+    message: `${contact_name || 'Unknown'} from ${venue_name} (${city || 'Unknown location'}) submitted the pretzel program form. Email: ${email}`,
+    created_at: new Date().toISOString(),
+  }), { expirationTtl: 604800 }); // 7 days
+
+  // Alert Drew immediately via email
+  const drewAlertBody = [
+    `🥨 New inbound lead from the pretzel program page!`,
+    '',
+    `Venue: ${venue_name}`,
+    `Contact: ${contact_name || '(no name)'}`,
+    `Email: ${email}`,
+    `Phone: ${phone || '(none)'}`,
+    `Type: ${venue_type || '(not specified)'}`,
+    `City: ${city || '(not specified)'}`,
+    `Notes: ${notes || '(none)'}`,
+    '',
+    'They came to you — reply fast.',
+    '',
+    `Drew's cell: 801.916.9122`,
+  ].join('\n');
+
+  await sendGmailFromDrew(env, {
+    to: env.DREW_EMAIL,
+    subject: `🥨 New lead: ${venue_name} (${city || venue_type || 'website form'})`,
+    body: drewAlertBody,
+  }).catch(e => console.error('[LeadCapture] Alert email failed:', e.message));
+
+  // Auto-respond to the lead immediately
+  const firstName = (contact_name || '').split(' ')[0] || 'there';
+  const autoReplyBody = [
+    `${firstName} —`,
+    '',
+    `Thanks for reaching out about the Dangerous Pretzel program. Got your info.`,
+    '',
+    `I'll follow up personally within 24 hours — or feel free to call or text me directly at 801.916.9122.`,
+    '',
+    `— Drew`,
+    `Dangerous Pretzel Co`,
+    `dangerouspretzel.com`,
+  ].join('\n');
+
+  await sendGmailFromDrew(env, {
+    to: email,
+    subject: `Re: Pretzel program for ${venue_name}`,
+    body: autoReplyBody,
+  }).catch(e => console.error('[LeadCapture] Auto-reply failed:', e.message));
+
+  return new Response(JSON.stringify({ ok: true, id }), { headers: { 'Content-Type': 'application/json' } });
+}
+
+// ── GMAIL SENDER (for account-worker alerts) ─────────────────────────────────
+async function sendGmailFromDrew(env, { to, subject, body }) {
+  const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id:     env.GMAIL_CLIENT_ID,
+      client_secret: env.GMAIL_CLIENT_SECRET,
+      refresh_token: env.GMAIL_REFRESH_TOKEN,
+      grant_type:    'refresh_token',
+    }),
+  });
+  const { access_token } = await tokenResp.json();
+  const message = [
+    `To: ${to}`,
+    `From: Drew @ Dangerous Pretzel <${env.FROM_EMAIL}>`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    body,
+  ].join('\r\n');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const resp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw: encoded }),
+  });
+  return resp.json();
+}
+
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 async function getAccountHealth(env) {
   const accounts = await env.DB.prepare(`
     SELECT v.name, v.category, aa.health_status, aa.churn_risk,
-           aa.last_order_date, aa.avg_monthly_rev, aa.total_rev_lifetime
+           aa.last_order_date, aa.avg_monthly_rev, aa.total_rev_lifetime,
+           aa.fulfilled_by, aa.account_rep,
+           CAST(julianday('now') - julianday(aa.last_order_date) AS INTEGER) as days_since_order
     FROM active_accounts aa
     JOIN venues v ON v.id = aa.venue_id
     WHERE aa.warmer_removed_at IS NULL
@@ -2306,8 +2821,9 @@ async function sendGmail(env, { to, subject, body, threadId }) {
     body,
   ].join('\r\n');
 
-  const encoded = btoa(unescape(encodeURIComponent(message)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
   const payload = { raw: encoded };
   if (threadId) payload.threadId = threadId;
@@ -2324,4 +2840,247 @@ async function sendGmail(env, { to, subject, body, threadId }) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── Coach Voice / Redraft ─────────────────────────────────────────────────────
+
+/**
+ * Load all pending outreach emails, redraft each with Claude using Drew's feedback,
+ * and persist the updated subject, body, and self_score back to outreach_logs.
+ *
+ * @param {object} env  - Cloudflare Worker env bindings
+ * @param {string} feedback - Drew's coaching note
+ * @returns {{ redrafted: number, emails: Array }}
+ */
+async function redraftPendingEmails(env, feedback) {
+  // Load pending emails joined with venue info
+  const { results: pending } = await env.DB.prepare(`
+    SELECT o.id, o.subject, o.body, v.name AS venue_name, v.category
+    FROM outreach_logs o
+    JOIN venues v ON v.id = o.venue_id
+    WHERE o.approval_status = 'pending'
+    ORDER BY o.created_at DESC
+  `).all();
+
+  if (!pending || pending.length === 0) {
+    return { redrafted: 0, emails: [] };
+  }
+
+  const summaries = [];
+
+  for (const email of pending) {
+    const prompt = `You are redrafting a venue outreach email for Dangerous Pretzel Co based on Drew's coaching feedback.
+
+DREW'S FEEDBACK: ${feedback}
+
+ORIGINAL EMAIL:
+Subject: ${email.subject}
+Body: ${email.body}
+
+VENUE: ${email.venue_name} (${email.category || 'venue'})
+
+VOICE RULES (non-negotiable):
+- Tone: friendly, casual, local. We're a local SLC company talking to someone at a nearby venue.
+- The whole pitch in one sentence: we make really great unique pretzels that people at this type of venue would absolutely love — talk about and come back for — and we've made it super easy to offer them.
+- The ASK is simply: "could I bring some pretzels by for the team to try?" Nothing more formal than that.
+- Lead with what their crowd/guests would experience, not what we supply operationally
+- Social proof: already at Sandy Amphitheater, Delta Center, Powder Mountain — weave in naturally, don't list
+- DO NOT say "warmer model", "one warmer, one night", "trial run" — too transactional/mechanical
+- DO NOT say "if they don't love it we pick up the warmer" — defensive
+- DO NOT describe mechanics (warmer size, fridge storage) — second conversation
+- Subject line: "[Venue] + pretzels?" is the default. Use it unless you have a sharper specific hook.
+- End with a P.S. line AFTER the sign-off: "P.S. See how other venues are running it: https://program.dangerouspretzel.com/pretzel-program"
+- Keep the main body under 130 words (P.S. is separate). Sign off: "— Drew"
+
+Return JSON: {"subject": "...", "body": "...", "self_score": 8, "reasoning": "..."}`;
+
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 600,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+
+      if (!response.ok) {
+        console.error(`[CoachVoice] Claude error for log ${email.id}: ${response.status}`);
+        continue;
+      }
+
+      const respData = await response.json();
+      const text = respData.content?.[0]?.text || '';
+      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
+      const redraft = JSON.parse(clean);
+
+      // Persist updated fields to outreach_logs
+      await env.DB.prepare(`
+        UPDATE outreach_logs
+        SET subject = ?, body = ?, self_score = ?, notes = 'voice-coached'
+        WHERE id = ?
+      `).bind(redraft.subject, redraft.body, redraft.self_score ?? null, email.id).run();
+
+      summaries.push({
+        id: email.id,
+        venue: email.venue_name,
+        old_subject: email.subject,
+        new_subject: redraft.subject,
+      });
+    } catch (err) {
+      console.error(`[CoachVoice] Failed to redraft log ${email.id}:`, err.message);
+    }
+  }
+
+  return { redrafted: summaries.length, emails: summaries };
+}
+
+// ── Voice Embedding Handlers (Vectorize + Workers AI bge-large-en-v1.5) ───────
+
+/**
+ * Embed a single outreach_log entry and upsert into Vectorize.
+ * POST /account/voice-embed
+ * Body: { log_id } or { subject, body, venue_name, category, self_score }
+ */
+async function handleVoiceEmbed(request, env) {
+  if (!env.VECTORIZE || !env.AI) {
+    return new Response(JSON.stringify({ error: 'VECTORIZE or AI binding missing' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+  try {
+    const input = await request.json();
+    let subject, body, venueName, category, selfScore, logId;
+
+    // If body+subject provided directly → use them (manual embed, e.g. gold standard emails)
+    // If only log_id provided → look up from D1
+    if (input.log_id && !input.body) {
+      const row = await env.DB.prepare(`
+        SELECT o.id, o.subject, o.body, o.self_score, v.name as venue_name, v.category
+        FROM outreach_logs o JOIN venues v ON v.id = o.venue_id
+        WHERE o.id = ? AND o.approval_status = 'approved'
+      `).bind(input.log_id).first();
+      if (!row) return new Response(JSON.stringify({ error: 'Log not found or not approved' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      ({ id: logId, subject, body, self_score: selfScore, venue_name: venueName, category } = row);
+    } else {
+      ({ subject, body, venue_name: venueName, category, self_score: selfScore } = input);
+      logId = input.log_id || `manual_${Date.now()}`;
+    }
+
+    const textToEmbed = `Subject: ${subject}\n\nVenue type: ${category || 'unknown'}\n\n${body}`;
+    const embResult = await env.AI.run('@cf/baai/bge-large-en-v1.5', { text: [textToEmbed] });
+    const vector = embResult?.data?.[0];
+    if (!vector || !Array.isArray(vector)) {
+      return new Response(JSON.stringify({ error: 'Embedding failed', raw: embResult }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    await env.VECTORIZE.upsert([{
+      id: String(logId),
+      values: vector,
+      metadata: {
+        subject: (subject || '').slice(0, 200),
+        body_preview: (body || '').slice(0, 500),
+        venue_name: venueName || '',
+        category: category || '',
+        self_score: selfScore || 0,
+      },
+    }]);
+
+    return new Response(JSON.stringify({ embedded: true, log_id: logId, dims: vector.length }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Batch embed recent approved emails from outreach_logs.
+ * GET /account/voice-scan?limit=50
+ * Skips ones already in Vectorize (by checking if upsert is safe — just re-upserts, idempotent).
+ */
+async function handleVoiceScan(env, limit = 50) {
+  if (!env.VECTORIZE || !env.AI) {
+    return new Response(JSON.stringify({ error: 'VECTORIZE or AI binding missing' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+  try {
+    const rows = await env.DB.prepare(`
+      SELECT o.id, o.subject, o.body, o.self_score, v.name as venue_name, v.category
+      FROM outreach_logs o
+      JOIN venues v ON v.id = o.venue_id
+      WHERE o.approval_status = 'approved'
+        AND o.body IS NOT NULL AND length(o.body) > 50
+        AND o.self_score >= 7
+      ORDER BY o.sent_at DESC
+      LIMIT ?
+    `).bind(limit).all();
+
+    const logs = rows.results || [];
+    let embedded = 0, failed = 0;
+
+    // Process in batches of 5 to avoid rate limits
+    for (let i = 0; i < logs.length; i += 5) {
+      const batch = logs.slice(i, i + 5);
+      const texts = batch.map(r => `Subject: ${r.subject}\n\nVenue type: ${r.category || 'unknown'}\n\n${r.body}`);
+      try {
+        const embResult = await env.AI.run('@cf/baai/bge-large-en-v1.5', { text: texts });
+        const vectors = embResult?.data || [];
+        const toUpsert = batch.map((r, idx) => vectors[idx] ? {
+          id: String(r.id),
+          values: vectors[idx],
+          metadata: {
+            subject: (r.subject || '').slice(0, 200),
+            body_preview: (r.body || '').slice(0, 500),
+            venue_name: r.venue_name || '',
+            category: r.category || '',
+            self_score: r.self_score || 0,
+          },
+        } : null).filter(Boolean);
+        if (toUpsert.length > 0) {
+          await env.VECTORIZE.upsert(toUpsert);
+          embedded += toUpsert.length;
+        }
+        failed += batch.length - toUpsert.length;
+      } catch {
+        failed += batch.length;
+      }
+    }
+
+    return new Response(JSON.stringify({ scanned: logs.length, embedded, failed }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Find N most similar sent emails given a query string.
+ * GET /account/voice-similar?q=outdoor+amphitheater+summer+trial&k=3
+ * Used by outreach-agent before drafting.
+ */
+async function handleVoiceSimilar(env, query, k = 3) {
+  if (!env.VECTORIZE || !env.AI) {
+    return new Response(JSON.stringify({ error: 'VECTORIZE or AI binding missing' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+  try {
+    if (!query) return new Response(JSON.stringify({ error: 'q required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const embResult = await env.AI.run('@cf/baai/bge-large-en-v1.5', { text: [query] });
+    const vector = embResult?.data?.[0];
+    if (!vector) return new Response(JSON.stringify({ error: 'Embedding failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+
+    const results = await env.VECTORIZE.query(vector, { topK: k, returnMetadata: true });
+    const matches = (results?.matches || []).map(m => ({
+      id: m.id,
+      score: m.score,
+      subject: m.metadata?.subject || '',
+      body_preview: m.metadata?.body_preview || '',
+      venue_name: m.metadata?.venue_name || '',
+      category: m.metadata?.category || '',
+      self_score: m.metadata?.self_score || 0,
+    }));
+
+    return new Response(JSON.stringify({ matches }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
 }

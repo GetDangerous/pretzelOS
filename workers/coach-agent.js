@@ -242,6 +242,20 @@ export default {
       response = new Response(JSON.stringify({ scope, categories: grouped, total: results.results?.length || 0 }), {
         headers: { 'Content-Type': 'application/json' }
       });
+    } else if (path === '/coach/add' && request.method === 'POST') {
+      // Direct brain add — skips Claude, just saves to business_brain
+      // Usage: curl -X POST /coach/add -d '{"text":"Never contact ski resorts in summer","category":"timing","scope":"outreach"}'
+      const body = await request.json();
+      const { text, category, scope, entity_name } = body;
+      if (!text?.trim()) { response = json({ error: 'text required' }, 400); }
+      else {
+        const id = crypto.randomUUID();
+        await env.DB.prepare(`
+          INSERT INTO business_brain (id, scope, category, instruction, entity_name, active, use_count, created_at)
+          VALUES (?, ?, ?, ?, ?, 1, 0, datetime('now'))
+        `).bind(id, scope || 'all', category || 'nuance', text.trim(), entity_name || null).run();
+        response = json({ saved: true, id, category: category || 'nuance', scope: scope || 'all' });
+      }
     } else if (path === '/coach/archive' && request.method === 'POST') {
       response = await handleArchive(request, env);
     } else if (path === '/coach/edit' && request.method === 'POST') {

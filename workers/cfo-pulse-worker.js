@@ -98,13 +98,15 @@ async function runPulse(env) {
 
   // Get last known cash from directive
   const lastDirective = await env.DB.prepare(
-    "SELECT estimated_weekly_revenue, estimated_weekly_burn, cash_runway_weeks FROM financial_directives WHERE active = 1 LIMIT 1"
+    "SELECT estimated_weekly_revenue, estimated_weekly_burn, cash_runway_weeks, cash_on_hand FROM financial_directives WHERE active = 1 LIMIT 1"
   ).first();
 
-  // Rough cash estimate: last known + today's delta
-  const estimatedCash = lastDirective
-    ? ((lastDirective.cash_runway_weeks || 0) * (lastDirective.estimated_weekly_burn || 0)) + cashDeltaToday
-    : null;
+  // Use stored cash_on_hand if available, otherwise estimate from runway × burn
+  const estimatedCash = lastDirective?.cash_on_hand
+    ? lastDirective.cash_on_hand + cashDeltaToday
+    : (lastDirective
+      ? ((lastDirective.cash_runway_weeks || 0) * (lastDirective.estimated_weekly_burn || 0)) + cashDeltaToday
+      : null);
 
   // ── 3. Account health snapshot ─────────────────────────────────────────────
   const accountHealth = await env.DB.prepare(`
@@ -168,6 +170,7 @@ async function runPulse(env) {
     status_reason: statusReason,
     events_this_hour: events.length,
     high_sig_this_hour: highSigEvents.length,
+    cash_on_hand: estimatedCash,
     cash_delta_today: cashDeltaToday,
     payments_today: paymentsToday,
     new_bills_today: newBillsToday,

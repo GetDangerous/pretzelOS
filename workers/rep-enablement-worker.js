@@ -175,7 +175,7 @@ async function generateRepKitHTML(distributor, env) {
 <div class="header">
   <div>
     <div class="logo">DANGEROUS PRETZEL CO.</div>
-    <div class="tagline">dangerouspretzel.com · (801) 916-0275</div>
+    <div class="tagline">dangerouspretzel.com · 801.916.9122</div>
   </div>
   <div class="dist-badge">${dist.name} Rep Kit</div>
 </div>
@@ -251,7 +251,7 @@ async function generateRepKitHTML(distributor, env) {
   <div class="section-title">Your contact at Dangerous Pretzel</div>
   <div class="contact-box">
     <strong>Drew — Founder, Dangerous Pretzel Co</strong>
-    ${kit.contact_info || 'drew@dangerouspretzel.com · (801) 916-0275 · Will do joint sales calls in SLC metro and Denver.'}
+    ${kit.contact_info || 'drew@dangerouspretzel.com · 801.916.9122 · Will do joint sales calls in SLC metro and Denver.'}
   </div>
 </div>
 

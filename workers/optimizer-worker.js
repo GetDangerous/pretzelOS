@@ -59,7 +59,7 @@ async function runOptimizer(env) {
   console.log('[Optimizer] Starting weekly optimization...');
 
   // ── 1. Collect performance data ──────────────────────────────────────────
-  const [recentMetrics, outreachStats, qualifierStats, subjectStats, closedDealData] = await Promise.all([
+  const [recentMetrics, outreachStats, qualifierStats, subjectStats, closedDealData, voiceCorrections] = await Promise.all([
     // Last 4 weeks of weekly metrics
     env.DB.prepare(`
       SELECT * FROM performance_metrics
@@ -117,7 +117,34 @@ async function runOptimizer(env) {
       GROUP BY prompt_version, venue_category
       ORDER BY deals_closed DESC
     `).all().catch(() => ({ results: [] })),
+
+    // Voice corrections — Drew's edits to agent-drafted emails (highest priority signal)
+    env.DB.prepare(`
+      SELECT original_subject, edited_subject, original_body, edited_body, created_at
+      FROM voice_corrections
+      WHERE optimizer_consumed_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all().catch(() => ({ results: [] })),
   ]);
+
+  // ── A/B subject line test results (for optimizer analysis) ──────────────
+  let abResults = { results: [] };
+  try {
+    abResults = await env.DB.prepare(`
+      SELECT
+        subject_variant,
+        COUNT(*) as sent,
+        SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened,
+        SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) as replied,
+        ROUND(100.0 * SUM(CASE WHEN replied_at IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as reply_rate_pct
+      FROM outreach_logs
+      WHERE direction = 'out' AND sent_at IS NOT NULL
+        AND subject_variant IS NOT NULL AND sequence_step = 1
+        AND sent_at >= date('now', '-30 days')
+      GROUP BY subject_variant
+    `).all();
+  } catch { /* subject_variant column may not exist yet */ }
 
   // ── 2. Calculate what's underperforming ──────────────────────────────────
   // Need at least some outreach data to optimize
@@ -160,8 +187,21 @@ async function runOptimizer(env) {
     underperforming.push({ agent: 'qualifier', metric: 'tier1_rate', actual: tier1Rate, target: BENCHMARKS.qualifier.threshold });
   }
 
+  // Voice corrections always trigger outreach_email rewrite (Drew's edits are the strongest signal)
+  const corrections = voiceCorrections?.results || [];
+  if (corrections.length > 0 && !underperforming.find(u => u.agent === 'outreach_email')) {
+    underperforming.push({
+      agent: 'outreach_email',
+      metric: 'voice_corrections',
+      actual: corrections.length,
+      target: 0,
+      voiceDriven: true,
+    });
+    console.log(`[Optimizer] ${corrections.length} voice corrections from Drew → triggering outreach_email rewrite`);
+  }
+
   if (underperforming.length === 0) {
-    console.log('[Optimizer] All prompts meeting benchmarks — no rewrites needed');
+    console.log('[Optimizer] All prompts meeting benchmarks, no voice corrections — no rewrites needed');
     await logOptimizerRun(env, [], 'All prompts meeting benchmarks');
     return { rewrites: 0, message: 'All benchmarks met' };
   }
@@ -187,6 +227,8 @@ async function runOptimizer(env) {
       metrics: recentMetrics.results,
       optimizerDirective,
       closedDeals: closedDealData?.results || [],
+      voiceCorrections: corrections,
+      abTestResults: abResults?.results || [],
     });
 
     try {
@@ -244,7 +286,16 @@ async function runOptimizer(env) {
     }
   }
 
-  // ── 4. Log the run ───────────────────────────────────────────────────────
+  // ── 4. Mark voice corrections as consumed ─────────────────────────────────
+  if (corrections.length > 0) {
+    await env.DB.prepare(`
+      UPDATE voice_corrections SET optimizer_consumed_at = datetime('now')
+      WHERE optimizer_consumed_at IS NULL
+    `).run().catch(err => console.error('[Optimizer] Failed to mark corrections consumed:', err.message));
+    console.log(`[Optimizer] Marked ${corrections.length} voice corrections as consumed`);
+  }
+
+  // ── 5. Log the run ───────────────────────────────────────────────────────
   await logOptimizerRun(env, underperforming, notes.join(' | '));
 
   console.log(`[Optimizer] Done. Rewrites: ${rewrites}`);
@@ -288,6 +339,26 @@ Optimize for warmer placements, not email opens.
 
 Recent closed deals by prompt version:
 ${stats.closedDeals.map(d => `- Version ${d.prompt_version || '?'}, ${d.venue_category || 'mixed'}: ${d.deals_closed} deals, avg ${Math.round(d.avg_days || 0)} days to close, avg self-score ${(d.avg_score || 0).toFixed(1)}`).join('\n')}
+
+` : ''}${stats.voiceCorrections && stats.voiceCorrections.length > 0 ? `DREW'S VOICE CORRECTIONS (HIGHEST PRIORITY — weight 10x):
+These are actual edits Drew made to agent-drafted emails before sending. They show exactly how to adjust the voice/tone/content. Learn from these patterns:
+
+${stats.voiceCorrections.map((vc, i) => {
+  const parts = [];
+  if (vc.original_subject && vc.edited_subject) parts.push(`  Subject: "${vc.original_subject}" → "${vc.edited_subject}"`);
+  if (vc.original_body && vc.edited_body) parts.push(`  Body changed (showing first 200 chars):\n    BEFORE: ${vc.original_body.slice(0, 200)}\n    AFTER: ${vc.edited_body.slice(0, 200)}`);
+  return `${i + 1}. ${parts.join('\n')}`;
+}).join('\n\n')}
+
+These corrections represent Drew's exact voice preferences. Incorporate these patterns into the rewritten prompt — the prompt should produce emails that match Drew's edits, not the agent's original drafts.
+
+` : ''}${stats.abTestResults && stats.abTestResults.length > 0 ? `A/B SUBJECT LINE TEST RESULTS (last 30 days):
+Variant A = question-style subjects ("Quick question about...?")
+Variant B = hook-style subjects ("[Venue] + pretzels")
+
+${stats.abTestResults.map(r => `- Variant ${r.subject_variant}: ${r.sent} sent, ${r.replied} replies (${r.reply_rate_pct || 0}% reply rate)`).join('\n')}
+
+If one variant clearly outperforms (20+ sends each), bias the subject line instructions toward the winning style. If insufficient data, keep both active.
 
 ` : ''}Rewrite instructions:
 - Keep what works — only change what's likely causing underperformance

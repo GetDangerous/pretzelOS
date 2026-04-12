@@ -30,10 +30,11 @@ crons = [
   "0 13 * * 1",      # Qualifier:  Monday    7am MT (1pm UTC)
   "0 14 * * 1",      # Catering:   Monday    8am MT (2pm UTC)
   "0 14 * * 2",      # Outreach:   Tuesday   8am MT (2pm UTC)
-  "0 14 * * 3",      # Catering:   Wednesday 8am MT (2pm UTC)
+  "0 14 * * 3",      # Catering+Outreach: Wednesday 8am MT (2pm UTC)
   "0 14 * * 4",      # Outreach:   Thursday  8am MT (2pm UTC)
-  "0 14 * * 5",      # Pilot:      Friday    8am MT (2pm UTC)
+  "0 14 * * 5",      # Outreach+Catering: Friday 8am MT (2pm UTC)
   "0 15 * * 1",      # Account:    Monday    9am MT (3pm UTC)
+  "30 12 * * *",     # Signal Scanner: Daily 6:30am MT (12:30pm UTC)
   "0 10 * * *",      # Toast Sync: Daily     4am MT (10am UTC)
   "0 20 * * *",      # Reviews+Retail: Daily 2pm MT (8pm UTC)
   "0 * * * *",       # CFO Pulse: Hourly (D1 only, free)
@@ -84,25 +85,69 @@ max_retries = 2
 # wrangler secret put GMAIL_REFRESH_TOKEN
 # wrangler secret put SWELLCX_API_KEY
 # wrangler secret put TOAST_COOKIE
-# wrangler secret put SQUARE_WEBHOOK_SECRET
+# wrangler secret put SQUARE_WEBHOOK_SIGNATURE_KEY
 # wrangler secret put SQUARE_ACCESS_TOKEN
 # wrangler secret put QBO_CLIENT_ID
 # wrangler secret put QBO_CLIENT_SECRET
 # wrangler secret put QBO_REFRESH_TOKEN
 # wrangler secret put QBO_REALM_ID
 # wrangler secret put QBO_WEBHOOK_TOKEN
+# wrangler secret put CF_API_TOKEN          # Browser Rendering — renders JS-heavy venue sites (USANA, Snowbird, etc.)
+
+# ── Durable Objects ──────────────────────────────────────────
+[[durable_objects.bindings]]
+name = "CHAT_SESSIONS"
+class_name = "ChatSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatSessionDO"]
+
+# ── Workflows (durable approval gate — no duplicate sends) ───
+[[workflows]]
+name = "outreach-approval"
+binding = "OUTREACH_WORKFLOW"
+class_name = "OutreachApprovalWorkflow"
+
+[[workflows]]
+name = "catering-approval"
+binding = "CATERING_WORKFLOW"
+class_name = "CateringApprovalWorkflow"
+
+[[workflows]]
+name = "retail-backfill"
+binding = "RETAIL_BACKFILL"
+class_name = "RetailBackfillWorkflow"
+
+# ── R2 (POS historical data for backfill) ────────────────────
+[[r2_buckets]]
+binding = "POS_DATA_BUCKET"
+bucket_name = "pretzel-pos-data"
+
+# ── Vectorize (voice style embeddings for outreach) ──────────
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "pretzel-voice-index"
+
+# ── Workers AI (cheap classification tasks) ──────────────────
+[ai]
+binding = "AI"
 
 [vars]
+CF_ACCOUNT_ID = "f399e3bcd5ea1501830d0ad1d35d9da3"
 FROM_EMAIL = "drew@dangerouspretzel.com"
 DREW_EMAIL = "drew@dangerouspretzel.com"
 BRAND_NAME = "Dangerous Pretzel Co"
 BRAND_DOMAIN = "dangerouspretzel.com"
 GOOGLE_PLACE_ID = "ChIJ8VjRwGf1UofDwab1j3GUsA"
 SLC_METRO_RADIUS_MILES = "50"
-OUTREACH_DAILY_LIMIT = "3"           # TAM protection — low and slow
-OUTREACH_WARMUP_WEEKS = "3"          # Tier 2 only for first 3 weeks
-OUTREACH_APPROVAL_GATE = "20"        # Human review on first 20 sends
+OUTREACH_DAILY_LIMIT = "8"           # 8 per run × 4 runs/week = 32/week target
+SMS_DAILY_LIMIT = "5"                # SMS nudges after email non-opens (24h)
+IG_DM_DAILY_LIMIT = "3"             # Instagram DM drafts per day (Drew sends manually)
+OUTREACH_WARMUP_WEEKS = "0"          # No warmup gating — send to Tier 1+2 immediately
+OUTREACH_APPROVAL_GATE = "10"        # Human review first 10, then auto-send unlocks
 OUTREACH_QUALITY_MIN = "7"           # Min self-score before send
 REVIEW_REQUEST_COOLDOWN_DAYS = "30"
 DEPLOY_DATE = "2026-03-20"
 ENVIRONMENT = "production"
+SQUARE_LOCATION_ID = "LEJ3PDZ9V6NYN"

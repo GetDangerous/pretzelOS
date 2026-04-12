@@ -89,7 +89,7 @@ async function runQualifier(env) {
 
       const prompt = promptRow.prompt_text.replace('{{venue_data}}', venueData);
 
-      const result = await callClaude(env.ANTHROPIC_API_KEY, promptRow.system_context, prompt);
+      const result = await callClaude(env.ANTHROPIC_API_KEY, promptRow.system_context, prompt, env);
 
       // Parse Claude's JSON response
       let parsed;
@@ -154,7 +154,25 @@ async function runQualifierLoop(env) {
   return { totalQualified, batches: batchNum };
 }
 
-async function callClaude(apiKey, systemPrompt, userPrompt) {
+async function workerAI(env, systemPrompt, userPrompt) {
+  if (!env.AI) return null;
+  try {
+    const resp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      max_tokens: 300,
+    });
+    return resp?.response || null;
+  } catch { return null; }
+}
+
+async function callClaude(apiKey, systemPrompt, userPrompt, env) {
+  // Try Workers AI first (free, no egress) — fall back to claude-haiku
+  const aiResult = await workerAI(env, systemPrompt, userPrompt);
+  if (aiResult) return aiResult;
+
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -163,7 +181,7 @@ async function callClaude(apiKey, systemPrompt, userPrompt) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001', // Fast + cheap for qualification
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],

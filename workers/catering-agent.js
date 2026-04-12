@@ -26,7 +26,7 @@ import { loadBrain } from './brain-loader.js';
 import { sendApprovalRequestEmail } from './approval-mailer.js';
 
 const MAX_SENDS_PER_RUN   = 5;      // Catering has larger TAM than wholesale
-const APPROVAL_GATE_COUNT = 15;     // First 15 park for Drew approval
+const APPROVAL_GATE_COUNT = 50;     // Park for Drew approval (window-based — resets every 30 days)
 const DRAFT_QUALITY_MIN   = 7;      // Min self-score to send
 const MAX_AGENT_LOOPS     = 8;
 // DEPLOY_DATE read from env.DEPLOY_DATE (wrangler.toml)
@@ -113,7 +113,7 @@ const CATERING_TOOLS = [
   },
   {
     name: 'flag_for_drew',
-    description: 'Flag this company for Drew to handle personally. Use for: large company (200+ employees), event planner who can refer many bookings, company already in Drew\'s network, past catering client worth a personal call.',
+    description: 'Flag this company for Drew to handle personally. Use for: massive company (5000+ employees) where a personal intro or partnership approach is needed, event planner who can refer 10+ events per year, company already in Drew\'s personal network, or past catering client due for re-engagement. Do NOT flag mid-size companies (200-5000 employees) — email them like everyone else.',
     input_schema: {
       type: 'object',
       properties: {
@@ -157,6 +157,20 @@ const CATERING_TOOLS = [
         reasoning: { type: 'string' },
       },
       required: ['lead_id', 'contact_email', 'subject', 'body', 'self_score', 'reasoning'],
+    },
+  },
+  {
+    name: 'find_catering_contact',
+    description: 'Search Apollo for the right contact email at this company — Office Manager, HR Director, Events Coordinator, EA, or People Operations. Use when contact_email is missing. Updates the lead in D1 if found.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        lead_id: { type: 'string' },
+        company_name: { type: 'string' },
+        company_website: { type: 'string' },
+        preferred_title: { type: 'string', description: 'Best title to target for this company type' },
+      },
+      required: ['lead_id', 'company_name'],
     },
   },
 ];
@@ -217,21 +231,39 @@ HOLD SIGNALS — actively look for these before drafting:
 - Industry in obvious downturn
 - Already has an established catering relationship (website mentions catering partner)
 
-FLAG FOR DREW:
-- Companies with 200+ employees — bigger deal, personal touch needed
-- Event planners who could refer 10+ events per year
-- Specific companies in Drew's personal network
-- Past catering clients due for re-engagement (personal call, not cold email)
+FLAG FOR DREW (use sparingly):
+- Companies with 5000+ employees — partnership or intro approach makes more sense than cold email
+- Event planners who could refer 10+ events per year (massive multiplier)
+- Specific companies already in Drew's personal network (don't cold email people he knows)
+- Past catering clients due for re-engagement (personal call preferred)
+
+DO NOT flag mid-size companies (200-5000 employees) just because they're big. Domo (600), Pluralsight (1800), CHG Healthcare (3500) — these are perfect cold email targets. Get the Office Manager or People Ops contact and send a great email.
+
+THE VOICE — READ THIS BEFORE DRAFTING:
+
+You are writing as Drew — local SLC pretzel maker, not a catering company. This should read like a thoughtful person emailing someone they think would genuinely appreciate what they've made.
+
+The pitch in one sentence: I make really good pretzels, your employees would love them (crowd favorite, something for everyone, way better than the usual cookies or donuts), and I'd love to see if you have any upcoming meetings or events where we could try something new.
+
+The ASK is simple: "Do you have any meetings, events, or other catering things coming up? We'd love to be involved — happy to bring some pretzels by so the team can try them first."
+
+That's it. Do not write more than that. Anything longer won't get read.
+
+BANNED for catering emails:
+- Bullet lists of flavors (save it for after they reply)
+- "Free taster box of 6" — just say "bring some by"
+- "Minor incident in the break room" — too quirky, feels like a template
+- "Invented by monks, perfected for punks" taglines — wrong tone for professional email
+- Revenue numbers, margin calculations — wrong context
+- "Sad sandwich tray" / "sad charcuterie board" — negative framing
+- Long emails with social proof, flavor dumps, and CTAs — this isn't a pitch deck
 
 VOICE:
-Good: "Your Q4 party doesn't have to be another bad charcuterie board."
-Bad: "We are pleased to offer our premium catering services for your corporate events."
+Good: "Hi [Name] — I run Dangerous Pretzel Co here in SLC, and I think your team would really love what we make. Soft pretzels, unique flavors, the kind of thing people ask about after the meeting. Do you have anything coming up where you'd want to try something different? Happy to bring some by."
+Bad: "The Spicy Bee with hot honey at your all-hands will get more Slack messages than the CEO's speech. Free taster box. 6 pretzels. Your team decides."
 
-Good: "The Spicy Bee with hot honey at your all-hands will get more Slack messages than the CEO's speech."
-Bad: "Our products have received outstanding reviews and would be perfect for your team."
-
-Good: "Free taster box. 6 pretzels. Your team decides. dangerouspretzel.com/catering"
-Bad: "I'd love to schedule a 30-minute consultation to discuss your catering needs."`;
+Good (subject): "pretzels for [Company]?" or "quick question about [Company] events"
+Bad (subject): "[Company]'s Q2 kickoff deserves better than a sad sandwich platter"`;
 
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
@@ -277,6 +309,12 @@ export default {
     }
     if (path === '/catering/stats') {
       return getCateringStats(env);
+    }
+    if (path === '/catering/coach-voice' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const feedback = body.feedback || 'Friendly, casual, local. We make great pretzels employees would love. Short, simple, just ask if they have any upcoming events and if we can bring some by.';
+      const result = await redraftCateringPending(env, feedback);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     }
     return new Response('Catering Agent', { status: 200 });
   }
@@ -333,7 +371,33 @@ async function runCateringAgent(env) {
     await sleep(2000);
   }
 
-  // Priority 2: Fresh Apollo prospects (if we haven't hit limit)
+  // Priority 2: Manual (seeded) leads — known companies, high value
+  if (sent < MAX_SENDS_PER_RUN) {
+    const manualLeads = await env.DB.prepare(`
+      SELECT cl.*
+      FROM catering_leads cl
+      LEFT JOIN catering_outreach_logs o ON o.lead_id = cl.id AND o.direction = 'out'
+      LEFT JOIN catering_holds h ON h.lead_id = cl.id AND h.active = 1 AND h.expires_at > datetime('now')
+      WHERE cl.source = 'manual'
+        AND cl.status = 'prospect'
+        AND o.id IS NULL
+        AND h.id IS NULL
+      ORDER BY cl.headcount DESC NULLS LAST, cl.created_at ASC
+      LIMIT ?
+    `).bind((MAX_SENDS_PER_RUN - sent) * 3).all();
+
+    for (const lead of (manualLeads.results || [])) {
+      if (sent >= MAX_SENDS_PER_RUN) break;
+      const result = await runAgentForLead(lead, env, false, brainContext);
+      processed++;
+      if (result.action === 'sent' || result.action === 'parked') sent++;
+      if (result.action === 'held') held++;
+      if (result.action === 'flagged') flagged++;
+      await sleep(2000);
+    }
+  }
+
+  // Priority 3: Fresh Apollo prospects (if we haven't hit limit)
   if (sent < MAX_SENDS_PER_RUN) {
     const apolloLeads = await env.DB.prepare(`
       SELECT cl.*
@@ -361,7 +425,7 @@ async function runCateringAgent(env) {
     }
   }
 
-  // Priority 3: Follow-ups (day 3 + day 7)
+  // Priority 4: Follow-ups (day 3 + day 7)
   await runFollowUps(env);
 
   console.log(`[Catering] Done. Processed: ${processed}, Sent/Parked: ${sent}, Held: ${held}, Flagged: ${flagged}`);
@@ -396,7 +460,9 @@ ${JSON.stringify({
   seasonal_flags: lead.seasonal_flags,
 }, null, 2)}
 
-Start with check_contact_history, then assess_seasonal_timing, then research_company if website is available. If this is a retail crossover (source = 'retail_crossover'), call check_retail_crossover first — it's your best opening line.`
+Start with check_contact_history, then assess_seasonal_timing, then research_company if website is available. If this is a retail crossover (source = 'retail_crossover'), call check_retail_crossover first — it's your best opening line.
+
+IMPORTANT: If contact_email is null or missing, call find_catering_contact before drafting. You cannot send without an email address. If Apollo returns no email, flag_for_drew with reason "No email found — needs manual lookup".`
     }
   ];
 
@@ -473,10 +539,10 @@ async function executeTool(toolName, input, lead, env, dryRun) {
           per_page: 10,
         };
 
-        const response = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
+        const response = await fetch('https://api.apollo.io/v1/organizations/search', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          headers: { 'Content-Type': 'application/json', 'X-Api-Key': env.APOLLO_API_KEY, 'Cache-Control': 'no-cache' },
+          body: JSON.stringify({ ...payload, api_key: undefined }),
         });
 
         if (!response.ok) return { error: `Apollo error ${response.status}` };
@@ -656,6 +722,79 @@ async function executeTool(toolName, input, lead, env, dryRun) {
       return { held: true, expires_at: expiresAt, reason: input.reason };
     }
 
+    case 'find_catering_contact': {
+      try {
+        const domain = input.company_website
+          ? input.company_website.replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+          : null;
+
+        const titlesToSearch = [
+          input.preferred_title || 'Office Manager',
+          'HR Director', 'HR Manager', 'Events Coordinator', 'Events Manager',
+          'People Operations', 'Executive Assistant', 'Administrative Manager',
+        ];
+
+        const searchBody = {
+          person_titles: titlesToSearch,
+          include_similar_titles: true,
+          per_page: 5,
+        };
+        if (domain) {
+          searchBody.q_organization_domains_list = [domain];
+        } else {
+          searchBody.q_organization_name = input.company_name;
+        }
+
+        const resp = await fetch('https://api.apollo.io/v1/mixed_people/api_search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'X-Api-Key': env.APOLLO_API_KEY },
+          body: JSON.stringify(searchBody),
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          return { error: `Apollo ${resp.status}: ${errText.slice(0, 200)}` };
+        }
+        const data = await resp.json();
+        const people = data.people || [];
+        const best = people.find(p => p.has_email || p.email) || people[0];
+
+        if (!best) return { found: false, searched: input.company_name };
+
+        let email = best.email || null;
+        const name = [best.first_name, best.last_name].filter(Boolean).join(' ') || best.name || null;
+        const title = best.title || null;
+
+        // If person found but email locked — enrich to reveal it
+        if (!email && best.id) {
+          try {
+            const enrichResp = await fetch('https://api.apollo.io/v1/people/match', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'X-Api-Key': env.APOLLO_API_KEY },
+              body: JSON.stringify({ id: best.id }),
+            });
+            if (enrichResp.ok) {
+              const enrichData = await enrichResp.json();
+              if (enrichData.person?.email) email = enrichData.person.email;
+            }
+          } catch { /* skip enrichment */ }
+        }
+
+        if (email && !dryRun) {
+          await env.DB.prepare(`
+            UPDATE catering_leads
+            SET contact_email = ?, contact_name = COALESCE(contact_name, ?),
+                contact_title = COALESCE(contact_title, ?), updated_at = datetime('now')
+            WHERE id = ?
+          `).bind(email, name, title, input.lead_id).run();
+        }
+
+        return { found: !!email, email, name, title, note: email ? `Updated lead with ${name} (${title}) — ${email}` : `Found ${name} (${title}) but email locked in Apollo — needs enrich credit or manual lookup` };
+      } catch (err) {
+        return { error: err.message };
+      }
+    }
+
     case 'flag_for_drew': {
       if (dryRun) return { dry_run: true, would_flag: input };
 
@@ -679,28 +818,33 @@ async function executeTool(toolName, input, lead, env, dryRun) {
     }
 
     case 'draft_and_evaluate_email': {
-      const prompt = `Write and self-evaluate a catering outreach email for Dangerous Pretzel Co.
+      const prompt = `Write a short, friendly catering outreach email for Dangerous Pretzel Co.
 
-Company: ${input.company_name} (${input.industry}, ${input.company_size || 'unknown size'})
+Company: ${input.company_name} (${input.industry}, ${input.company_size || 'unknown size'}, ~${lead.headcount || 'unknown'} employees)
 Contact: ${input.contact_name || 'the team'} — ${lead.contact_title || 'unknown role'}
-Seasonal angle: ${input.seasonal_angle || 'none specific'}
+Seasonal note: ${input.seasonal_angle || 'none'}
 Research: ${input.research_summary}
-Retail crossover context: ${input.crossover_context || 'none — cold prospect'}
+Retail crossover: ${input.crossover_context || 'none — cold prospect'}
 
-Write the email. Then score 1-10 on:
-- Specificity: does it reference real things about THIS company?
-- Voice: Dangerous Pretzel energy (not corporate catering speak)
-- Hook: would THIS office manager open it on a Tuesday morning?
-- CTA: easy to say yes — free sample box offer whenever possible
+THE VOICE: You are Drew — local SLC pretzel maker. You think this company's employees would love your pretzels. Pretzels are a crowd favorite, something for everyone, way better than the usual cookies or donuts. You've made it really easy to offer them. The ask is simply whether they have any upcoming meetings, events, or catering occasions where they'd want to try something new — and if so, you'd love to bring some by.
 
-If total score below 7, rewrite once before returning.
+KEEP IT SHORT. Under 100 words. No bullet lists. No flavor names. No margin math. No "minor incident in the break room." Just a friendly, specific note from a local business owner.
+
+Subject: Keep it simple. "pretzels for [Company]?" works. Or a genuine question about their events.
+
+Score 1-10 on:
+- Brevity + readability: does it get to the point fast? Would a busy HR director actually read this?
+- Tone: does it sound like a real person or a marketing template?
+- Ask: is the CTA clear and easy to say yes to?
+
+If score below 7, rewrite once.
 
 Return JSON:
 {
   "subject": "...",
   "body": "...",
   "self_score": 8,
-  "score_breakdown": {"specificity": 8, "voice": 8, "hook": 8, "cta": 9},
+  "score_breakdown": {"brevity": 8, "tone": 8, "ask": 9},
   "rewritten": false
 }`;
 
@@ -735,36 +879,71 @@ Return JSON:
         return { action: 'held', reason: `Score ${input.self_score} below minimum ${DRAFT_QUALITY_MIN}` };
       }
 
+      // Dedup: skip if this lead already has a pending email waiting for approval
+      const existingPending = await env.DB.prepare(
+        `SELECT id FROM catering_outreach_logs WHERE lead_id = ? AND approval_status = 'pending' AND direction = 'out' LIMIT 1`
+      ).bind(input.lead_id).first();
+      if (existingPending) {
+        return { action: 'skipped', reason: 'Already has a pending email in the approval queue' };
+      }
+
       const totalSent = await getTotalSentCount(env);
       const inGate = totalSent < APPROVAL_GATE_COUNT;
       const logId = crypto.randomUUID();
 
       if (inGate) {
-        await env.DB.prepare(`
-          INSERT INTO catering_outreach_logs (
-            id, lead_id, sequence_step, channel, direction,
-            subject, body, from_address, to_address,
-            approval_status, agent_reasoning, self_score, created_at
-          ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
-        `).bind(
-          logId, input.lead_id, input.subject, input.body,
-          env.FROM_EMAIL, lead.contact_email || input.contact_email,
-          input.reasoning, input.self_score
-        ).run();
-        // Send Drew an approval email with one-tap links
-        try {
+        const contactEmail = lead.contact_email || input.contact_email;
+        // Spawn durable Workflow — atomic park + approval email + durable send
+        if (env.CATERING_WORKFLOW) {
+          try {
+            await env.CATERING_WORKFLOW.create({
+              id: logId,
+              params: {
+                logId,
+                leadId: input.lead_id,
+                leadName: lead.name || input.lead_id,
+                contactEmail,
+                subject: input.subject,
+                body: input.body,
+                selfScore: input.self_score,
+                reasoning: input.reasoning,
+              },
+            });
+          } catch (err) {
+            console.error('[Catering] Workflow spawn failed, falling back to D1 park:', err.message);
+            await env.DB.prepare(`
+              INSERT INTO catering_outreach_logs (
+                id, lead_id, sequence_step, channel, direction,
+                subject, body, from_address, to_address,
+                approval_status, agent_reasoning, self_score, created_at
+              ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
+            `).bind(
+              logId, input.lead_id, input.subject, input.body,
+              env.FROM_EMAIL, contactEmail, input.reasoning, input.self_score
+            ).run();
+            await sendApprovalRequestEmail({
+              logId, venueName: lead.name || input.lead_id, contactEmail,
+              subject: input.subject, body: input.body,
+              selfScore: input.self_score, reasoning: input.reasoning, channel: 'catering',
+            }, env).catch(e => console.error('[Catering] Fallback approval email failed:', e.message));
+          }
+        } else {
+          // Legacy path
+          await env.DB.prepare(`
+            INSERT INTO catering_outreach_logs (
+              id, lead_id, sequence_step, channel, direction,
+              subject, body, from_address, to_address,
+              approval_status, agent_reasoning, self_score, created_at
+            ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
+          `).bind(
+            logId, input.lead_id, input.subject, input.body,
+            env.FROM_EMAIL, contactEmail, input.reasoning, input.self_score
+          ).run();
           await sendApprovalRequestEmail({
-            logId,
-            venueName: lead.name || input.lead_id,
-            contactEmail: lead.contact_email || input.contact_email,
-            subject: input.subject,
-            body: input.body,
-            selfScore: input.self_score,
-            reasoning: input.reasoning,
-            channel: 'catering',
-          }, env);
-        } catch (err) {
-          console.error('[Catering] Approval email failed:', err.message);
+            logId, venueName: lead.name || input.lead_id, contactEmail,
+            subject: input.subject, body: input.body,
+            selfScore: input.self_score, reasoning: input.reasoning, channel: 'catering',
+          }, env).catch(e => console.error('[Catering] Approval email failed:', e.message));
         }
 
         return { action: 'parked', log_id: logId };
@@ -854,24 +1033,39 @@ async function sendFollowUp(lead, step, env) {
     ? `Write a 3-sentence day-3 catering follow-up for ${lead.name}. Reference original email without being needy. Add one new angle: a seasonal hook, a nearby company that booked us, or the free sample offer if not already made. Same voice: irreverent, specific. Return JSON: {body}`
     : `Write a final 2-sentence day-7 catering follow-up for ${lead.name}. Last one, say so briefly. Leave the door open — "the free sample offer stands whenever you're ready." Return JSON: {body}`;
 
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      system: CATERING_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-
-  if (!r.ok) return;
-  const data = await r.json();
-  const text = data.content?.[0]?.text || '';
+  // Try Workers AI first (free, native), fall back to Haiku
+  let text = null;
+  if (env.AI) {
+    try {
+      const aiResp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages: [
+          { role: 'system', content: CATERING_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 300,
+      });
+      text = aiResp?.response || null;
+    } catch { text = null; }
+  }
+  if (!text) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system: CATERING_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    text = data.content?.[0]?.text || '';
+  }
 
   try {
     const { body } = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
@@ -940,6 +1134,20 @@ async function getPendingApprovals(env) {
 }
 
 async function approveAndSend(logId, env) {
+  // Try to resume the durable Workflow first (new path — atomic, no race condition)
+  if (env.CATERING_WORKFLOW) {
+    try {
+      const instance = await env.CATERING_WORKFLOW.get(logId);
+      await instance.sendEvent({ type: 'decision', payload: { approved: true } });
+      return new Response(JSON.stringify({ sent: true, via: 'workflow', log_id: logId }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err) {
+      console.log(`[Catering] No workflow instance for ${logId}, using legacy direct send:`, err.message);
+    }
+  }
+
+  // Legacy fallback for rows parked before Workflows existed
   const log = await env.DB.prepare(`
     SELECT o.*, cl.contact_email, cl.name, cl.id as lead_id
     FROM catering_outreach_logs o
@@ -962,16 +1170,26 @@ async function approveAndSend(logId, env) {
     "UPDATE catering_leads SET status = 'contacted', last_contacted = datetime('now'), updated_at = datetime('now') WHERE id = ?"
   ).bind(log.lead_id).run();
 
-  return new Response(JSON.stringify({ sent: true }), {
+  return new Response(JSON.stringify({ sent: true, via: 'legacy' }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
 
 async function rejectEmail(logId, note, env) {
+  // Signal the Workflow so it terminates cleanly instead of waiting out the 48h timeout
+  if (env.CATERING_WORKFLOW) {
+    try {
+      const instance = await env.CATERING_WORKFLOW.get(logId);
+      await instance.sendEvent({ type: 'decision', payload: { approved: false, note: note || 'Rejected' } });
+      return new Response(JSON.stringify({ rejected: true, via: 'workflow' }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch { /* no workflow instance — fall through */ }
+  }
   await env.DB.prepare(
     "UPDATE catering_outreach_logs SET approval_status = 'rejected', notes = ? WHERE id = ?"
   ).bind(note || 'Rejected', logId).run();
-  return new Response(JSON.stringify({ rejected: true }), {
+  return new Response(JSON.stringify({ rejected: true, via: 'legacy' }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
@@ -1032,7 +1250,7 @@ async function logAgentReasoning(leadId, decision, toolResults, env) {
 
 async function getTotalSentCount(env) {
   const r = await env.DB.prepare(
-    "SELECT COUNT(*) as count FROM catering_outreach_logs WHERE direction = 'out' AND (sent_at IS NOT NULL OR approval_status = 'approved')"
+    "SELECT COUNT(*) as count FROM catering_outreach_logs WHERE direction = 'out' AND (sent_at IS NOT NULL OR approval_status = 'approved') AND created_at > datetime('now', '-30 days')"
   ).first();
   return r?.count || 0;
 }
@@ -1043,6 +1261,64 @@ function categorizeSizeByHeadcount(n) {
   if (n < 51) return 'small';
   if (n < 201) return 'medium';
   return 'large';
+}
+
+async function redraftCateringPending(env, feedback) {
+  const { results: pending } = await env.DB.prepare(`
+    SELECT o.id, o.subject, o.body, cl.name AS company_name, cl.industry, cl.contact_name, cl.contact_title
+    FROM catering_outreach_logs o
+    JOIN catering_leads cl ON cl.id = o.lead_id
+    WHERE o.approval_status = 'pending'
+    ORDER BY o.created_at DESC
+  `).all();
+
+  if (!pending || pending.length === 0) return { redrafted: 0, emails: [] };
+
+  const summaries = [];
+
+  for (const email of pending) {
+    const prompt = `Redraft this catering outreach email for Dangerous Pretzel Co based on Drew's feedback.
+
+FEEDBACK: ${feedback}
+
+COMPANY: ${email.company_name} (${email.industry || 'business'})
+CONTACT: ${email.contact_name || 'the team'} — ${email.contact_title || 'unknown role'}
+
+ORIGINAL SUBJECT: ${email.subject}
+ORIGINAL BODY:
+${email.body}
+
+VOICE: You are Drew — a local SLC pretzel maker. Your pretzels are genuinely great, a crowd favorite, something for everyone, and way better than the usual cookies or donuts at office events. You've made it really simple for companies to offer them. The only ask: do they have any upcoming meetings, events, or catering occasions where they'd want to try something new? If so, you'd love to bring some by.
+
+RULES:
+- Under 100 words (body only)
+- Sound like Drew genuinely thinks their employees would love these — crowd favorite, something for everyone, way better than cookies or donuts
+- One ask: do you have any upcoming meetings, events, or catering needs? If so, I'd love to bring some by.
+- No bullet lists, no flavor names, no margin math
+- No negative framing ("sad sandwich", "bad charcuterie", "minor incident in the break room")
+- Sound like a real person, not a marketing template
+- Subject: "pretzels for [Company]?" — simple and direct
+
+Return JSON only: {"subject": "...", "body": "...", "self_score": 8}`;
+
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 500, messages: [{ role: 'user', content: prompt }] }),
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const text = data.content?.[0]?.text || '';
+      const draft = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
+      await env.DB.prepare(
+        `UPDATE catering_outreach_logs SET subject = ?, body = ?, self_score = ?, notes = 'voice-coached' WHERE id = ?`
+      ).bind(draft.subject, draft.body, draft.self_score || 8, email.id).run();
+      summaries.push({ id: email.id, company: email.company_name, old_subject: email.subject, new_subject: draft.subject });
+    } catch (err) { console.error('[CateringCoach] email', email.id, err.message); }
+  }
+
+  return { redrafted: summaries.length, emails: summaries };
 }
 
 async function sendGmail(env, { to, subject, body, threadId }) {
@@ -1058,7 +1334,9 @@ async function sendGmail(env, { to, subject, body, threadId }) {
   });
   const { access_token } = await tokenResp.json();
   const message = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(message))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const payload = { raw: encoded };
   if (threadId) payload.threadId = threadId;
   const resp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {

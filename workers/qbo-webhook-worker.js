@@ -544,6 +544,18 @@ Examples:
 
 Return just the sentence, nothing else.`;
 
+  // Try Workers AI first (free, no egress) — fall back to claude-haiku
+  try {
+    if (env.AI) {
+      const aiResp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 60,
+      });
+      const result = aiResp?.response?.trim();
+      if (result) return result;
+    }
+  } catch { /* fall through */ }
+
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -553,7 +565,7 @@ Return just the sentence, nothing else.`;
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',  // Fast + cheap for real-time
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 60,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -769,7 +781,9 @@ async function sendGmail(env, { to, subject, body }) {
   });
   const { access_token } = await tokenResp.json();
   const message = [`To: ${to}`, `From: Pretzel OS <${env.FROM_EMAIL}>`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(message))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },

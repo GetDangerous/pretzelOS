@@ -14,7 +14,9 @@ import { loadBrain } from './brain-loader.js';
 export default {
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(scanAndEnqueue(env));
+    ctx.waitUntil(scanAndEnqueue(env, '2h'));
+    // Process any auto-send replies whose 2h delay has elapsed
+    ctx.waitUntil(processAutoSends(env));
   },
 
   async queue(batch, env) {
@@ -47,7 +49,101 @@ export default {
     else if (path === '/replies/snooze' && request.method === 'POST')  res = await snoozeReply(request, env);
     else if (path === '/replies/history')     res = await getHistory(env);
     else if (path === '/replies/stats')       res = await getReplyStats(env);
-    else if (path === '/replies/run')         res = json({ enqueued: await scanAndEnqueue(env) });
+    else if (path === '/replies/auto-pending') {
+      const pending = await env.DB.prepare(`
+        SELECT id, from_email, venue_id, classification, suggested_reply,
+               auto_send_at, handling_note, received_at
+        FROM inbound_replies
+        WHERE status = 'auto_send_scheduled'
+        ORDER BY auto_send_at ASC
+      `).all();
+      res = json({ pending: pending.results || [] });
+    }
+    else if (path === '/replies/cancel-auto-send' && request.method === 'POST') {
+      const { reply_id } = await request.json();
+      await env.DB.prepare(
+        "UPDATE inbound_replies SET status='open', auto_send_at=NULL, handling_note='Auto-send cancelled by Drew', updated_at=datetime('now') WHERE id=? AND status='auto_send_scheduled'"
+      ).bind(reply_id).run();
+      res = json({ cancelled: true });
+    }
+    else if (path === '/replies/run') {
+      const window = url.searchParams.get('window') || '2h';
+      const debug = url.searchParams.has('debug');
+      if (debug) {
+        const token = await getGmailToken(env);
+        const listResp = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=in:inbox newer_than:${window}&maxResults=10`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const body = await listResp.json();
+        res = json({ gmail_status: listResp.status, messages_found: body.messages?.length || 0, raw: body });
+      } else {
+        res = json({ enqueued: await scanAndEnqueue(env, window) });
+      }
+    }
+    // SMS reply webhook — Swell CX sends inbound SMS here
+    else if (path === '/sms/webhook' && request.method === 'POST') {
+      try {
+        const payload = await request.json();
+        // Swell webhook payload: { contact_id, phone, body, direction: 'in', ... }
+        const phone = (payload.phone || payload.from || '').replace(/[^0-9]/g, '').replace(/^1/, '');
+        const body = payload.body || payload.message || payload.text || '';
+        if (!phone || !body) {
+          res = json({ error: 'Missing phone or body' }, 400);
+        } else {
+          // Find the venue by phone number
+          const venue = await env.DB.prepare(
+            `SELECT id, name FROM venues WHERE REPLACE(REPLACE(REPLACE(contact_phone, '-', ''), '(', ''), ')', '') LIKE '%' || ? || '%' LIMIT 1`
+          ).bind(phone.slice(-10)).first();
+          // Find the most recent outreach log for this venue
+          const lastLog = venue ? await env.DB.prepare(
+            `SELECT id, gmail_thread_id FROM outreach_logs WHERE venue_id = ? AND direction = 'out' ORDER BY sent_at DESC LIMIT 1`
+          ).bind(venue.id).first() : null;
+
+          const replyId = crypto.randomUUID();
+          await env.DB.prepare(`
+            INSERT INTO inbound_replies (
+              id, channel, venue_id, outreach_log_id,
+              gmail_message_id, gmail_thread_id,
+              from_email, from_name, subject, body_text,
+              received_at, status, created_at
+            ) VALUES (?, 'sms', ?, ?, ?, ?, ?, ?, 'SMS Reply', ?, datetime('now'), 'open', datetime('now'))
+          `).bind(
+            replyId, venue?.id || null, lastLog?.id || null,
+            'sms_' + replyId, lastLog?.gmail_thread_id || 'sms_thread_' + replyId,
+            phone, venue?.name || phone, body
+          ).run();
+
+          // Update venue replied_at if found
+          if (venue && lastLog) {
+            await env.DB.prepare(
+              `UPDATE outreach_logs SET replied_at = COALESCE(replied_at, datetime('now')) WHERE id = ?`
+            ).bind(lastLog.id).run();
+            await env.DB.prepare(
+              `UPDATE venues SET status = 'replied', updated_at = datetime('now') WHERE id = ? AND status = 'contacted'`
+            ).bind(venue.id).run();
+          }
+
+          // Enqueue for classification (same pipeline as email replies)
+          if (env.REPLY_QUEUE) {
+            await env.REPLY_QUEUE.send({
+              reply_id: replyId,
+              channel: 'sms',
+              from: phone,
+              body_text: body,
+              venue_id: venue?.id || null,
+              venue_name: venue?.name || null,
+            });
+          }
+
+          console.log(`[SMS Webhook] Inbound from ${phone.slice(0,6)}*** — venue: ${venue?.name || 'unknown'}`);
+          res = json({ received: true, reply_id: replyId, venue: venue?.name || null });
+        }
+      } catch (err) {
+        console.error('[SMS Webhook] Error:', err.message);
+        res = json({ error: err.message }, 500);
+      }
+    }
     else res = new Response('Reply Handler — Pretzel OS', { status: 200 });
 
     Object.entries(cors).forEach(([k, v]) => res.headers.set(k, v));
@@ -59,12 +155,12 @@ export default {
 // SCANNER — every 15 min, no Claude calls
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function scanAndEnqueue(env) {
+async function scanAndEnqueue(env, window = '2h') {
   const token = await getGmailToken(env);
 
-  // Scan inbox for recent messages (last 1 hour)
+  // Scan inbox for recent messages (configurable window, default 2h for overlap safety)
   const listResp = await fetch(
-    'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=in:inbox newer_than:1h&maxResults=50',
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=in:inbox newer_than:${window}&maxResults=50`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!listResp.ok) { console.error('[Reply Scanner] Gmail failed:', listResp.status); return 0; }
@@ -157,19 +253,36 @@ async function processReply(payload, env) {
     suggested = await draftResponse(body_text, match, classification, env);
   }
 
+  // ── SMART AUTO-SEND: safe categories get auto-replied after 2h delay ──
+  // price_question and needs_info are low-risk, formulaic responses
+  const AUTO_SEND_CATEGORIES = ['price_question', 'needs_info'];
+  const isAutoSendCandidate = AUTO_SEND_CATEGORIES.includes(classification.classification)
+    && classification.confidence >= 0.85
+    && suggested?.body;
+  const autoSendAt = isAutoSendCandidate
+    ? new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()  // 2 hours from now
+    : null;
+
   // Save
   const replyId = crypto.randomUUID();
   await saveReply({ id: replyId, gmail_message_id, thread_id,
     from_email, from_name, subject, body_text, received_at,
-    match, classification, suggested, daysToReply, status: 'open' }, env);
+    match, classification, suggested, daysToReply,
+    status: isAutoSendCandidate ? 'auto_send_scheduled' : 'open',
+    handling_note: isAutoSendCandidate ? `Auto-send scheduled for ${autoSendAt} (${classification.classification}, confidence ${classification.confidence})` : null,
+    autoSendAt }, env);
 
   // Update outreach status
   await updateOutreachStatus(match, classification, env);
 
-  // Alert Drew for hot replies
-  const isHot = classification.urgency === 'high'
-    || ['meeting_request', 'interested'].includes(classification.classification);
-  if (isHot) await sendAlert(replyId, match, classification, body_text, suggested, env);
+  // Alert Drew for any actionable reply (not just hot ones)
+  // Auto-send candidates still get alerts so Drew can intervene before the 2h window
+  const isActionable = classification.urgency === 'high'
+    || ['meeting_request', 'interested', 'more_info', 'price_question', 'referral'].includes(classification.classification);
+  if (isActionable) {
+    const autoNote = isAutoSendCandidate ? `\n⏱️ AUTO-SEND SCHEDULED: This reply will be auto-sent in ~2h. Edit or dismiss on dashboard to cancel.` : '';
+    await sendAlert(replyId, match, classification, body_text, suggested, env, autoNote);
+  }
 
   // Feed Optimizer
   await captureSignal(match, classification, daysToReply, env);
@@ -207,7 +320,8 @@ Return JSON only:
 {"classification":"...","confidence":0.95,"sentiment":"positive","urgency":"normal","key_point":"One sentence summary","reasoning":"..."}`;
 
   try {
-    const data = await claude(env, 'claude-haiku-4-5-20251001', 250, prompt);
+    let data = await workerAI(env, prompt);
+    if (!data) data = await claude(env, 'claude-haiku-4-5-20251001', 250, prompt);
     return JSON.parse(data.replace(/```json\n?|\n?```/g, '').trim());
   } catch {
     return { classification: 'needs_info', confidence: 0.5, sentiment: 'neutral',
@@ -230,7 +344,7 @@ async function draftResponse(bodyText, match, classification, env) {
 
   const guidance = {
     interested:             'Build momentum. Offer one specific next step — sample tasting or quick call. Under 4 sentences.',
-    meeting_request:        'Confirm enthusiasm. Suggest specific time this week or next. Give Drew\'s cell (801) 916-0275.',
+    meeting_request:        'Confirm enthusiasm. Suggest specific time this week or next. Give Drew\'s cell 801.916.9122.',
     price_question:         'Directional answer: free warmer, pretzels wholesale, most accounts $1k-$10k/month. Offer specifics on a quick call.',
     not_now:                'Acknowledge gracefully. Leave door open. Check back in 60 days. 2 sentences max.',
     already_has_vendor:     'Curious about what they have. Mention what\'s different: local, fresh-frozen, free warmer, zero training. No hard pitch.',
@@ -303,8 +417,8 @@ async function saveReply(p, env) {
       sentiment, urgency,
       suggested_subject, suggested_reply, suggested_reply_generated_at,
       status, handling_note, prompt_version, sequence_step, days_to_reply,
-      created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
+      auto_send_at, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
   `).bind(
     p.id, p.match.channel, p.match.log_id || null,
     p.match.venue_id || null, p.match.lead_id || null,
@@ -316,7 +430,8 @@ async function saveReply(p, env) {
     p.suggested?.subject || null, p.suggested?.body || null,
     p.suggested ? new Date().toISOString() : null,
     p.status || 'open', p.handling_note || null,
-    p.match.prompt_version || null, p.match.sequence_step || null, p.daysToReply || null
+    p.match.prompt_version || null, p.match.sequence_step || null, p.daysToReply || null,
+    p.autoSendAt || null
   ).run();
 }
 
@@ -351,7 +466,7 @@ async function updateOutreachStatus(match, classification, env) {
 
 // ── ALERT DREW ────────────────────────────────────────────────────────────────
 
-async function sendAlert(replyId, match, classification, bodyText, suggested, env) {
+async function sendAlert(replyId, match, classification, bodyText, suggested, env, extraNote = '') {
   const emoji = classification.classification === 'meeting_request' ? '🔥' : '💬';
   await sendGmail(env, {
     to: env.DREW_EMAIL,
@@ -365,6 +480,7 @@ async function sendAlert(replyId, match, classification, bodyText, suggested, en
       'SUGGESTED REPLY:',
       '',
       suggested?.body || 'See dashboard for suggested response',
+      extraNote,
       '',
       '------------------------------------',
       'Send or edit: https://pretzel-dashboard.pages.dev',
@@ -524,6 +640,61 @@ async function getReplyStats(env) {
   return json({ stats: s.results || [] });
 }
 
+// ── AUTO-SEND PROCESSOR ──────────────────────────────────────────────────────
+// Runs every 15min via scheduled. Sends replies that were auto-scheduled
+// and whose 2h delay has elapsed. Drew can cancel by changing status to 'open'
+// or 'dismissed' on dashboard before the window expires.
+
+async function processAutoSends(env) {
+  const ready = await env.DB.prepare(`
+    SELECT id, from_email, gmail_thread_id, subject, suggested_subject, suggested_reply,
+           venue_id, classification
+    FROM inbound_replies
+    WHERE status = 'auto_send_scheduled'
+      AND auto_send_at IS NOT NULL
+      AND auto_send_at <= datetime('now')
+    ORDER BY auto_send_at ASC
+    LIMIT 5
+  `).all();
+
+  let sent = 0;
+  for (const reply of (ready.results || [])) {
+    if (!reply.suggested_reply) {
+      await env.DB.prepare(
+        "UPDATE inbound_replies SET status='open', handling_note='Auto-send skipped: no draft', updated_at=datetime('now') WHERE id=?"
+      ).bind(reply.id).run();
+      continue;
+    }
+
+    try {
+      await sendGmailReply(env, {
+        to: reply.from_email,
+        subject: reply.suggested_subject || `Re: ${reply.subject || ''}`,
+        body: reply.suggested_reply,
+        threadId: reply.gmail_thread_id,
+      });
+
+      await env.DB.prepare(`
+        UPDATE inbound_replies SET status='auto_sent', drew_sent_reply=?,
+          handled_at=datetime('now'), handling_note='Auto-sent (safe category)',
+          updated_at=datetime('now')
+        WHERE id=?
+      `).bind(reply.suggested_reply, reply.id).run();
+
+      sent++;
+      console.log(`[Reply Auto-Send] Sent auto-reply for ${reply.classification} to ${reply.from_email}`);
+    } catch (err) {
+      console.error(`[Reply Auto-Send] Failed for ${reply.id}:`, err.message);
+      await env.DB.prepare(
+        "UPDATE inbound_replies SET status='open', handling_note=?, updated_at=datetime('now') WHERE id=?"
+      ).bind(`Auto-send failed: ${err.message}`, reply.id).run();
+    }
+  }
+
+  if (sent > 0) console.log(`[Reply Auto-Send] Sent ${sent} auto-replies`);
+  return sent;
+}
+
 // ── GMAIL ─────────────────────────────────────────────────────────────────────
 
 async function getGmailToken(env) {
@@ -554,8 +725,9 @@ async function sendGmail(env, { to, subject, body }) {
   const token = await getGmailToken(env);
   const raw = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`,
     `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(raw)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const bytes1 = new TextEncoder().encode(raw);
+  const binString1 = Array.from(bytes1, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString1).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -568,8 +740,9 @@ async function sendGmailReply(env, { to, subject, body, threadId }) {
   const raw = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`,
     `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8',
     `In-Reply-To: ${threadId}`, `References: ${threadId}`, '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(raw)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const bytes2 = new TextEncoder().encode(raw);
+  const binString2 = Array.from(bytes2, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString2).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -577,7 +750,23 @@ async function sendGmailReply(env, { to, subject, body, threadId }) {
   });
 }
 
-// ── CLAUDE HELPER ─────────────────────────────────────────────────────────────
+// ── AI HELPERS ────────────────────────────────────────────────────────────────
+
+// Workers AI — free tier, no API key, native Cloudflare binding
+// Used for cheap classification tasks (reply classifier)
+async function workerAI(env, prompt) {
+  if (!env.AI) return null;
+  try {
+    const resp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [
+        { role: 'system', content: 'You are a JSON classification assistant. Respond with valid JSON only, no markdown.' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 300,
+    });
+    return resp?.response || null;
+  } catch { return null; }
+}
 
 async function claude(env, model, maxTokens, prompt) {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {

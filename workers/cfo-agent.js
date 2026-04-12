@@ -70,7 +70,7 @@ const CFO_TOOLS = [
   },
   {
     name: 'fetch_qbo_cash_flow',
-    description: 'Fetch current cash position and cash flow statement from QBO. Returns bank account balances, cash in/out for the period.',
+    description: 'Fetch current bank balance (from Balance Sheet) AND cash flow for the period. The current_bank_balance field is the actual money in bank accounts right now — use this for cash_on_hand in the directive.',
     input_schema: {
       type: 'object',
       properties: {
@@ -195,6 +195,11 @@ const CFO_TOOLS = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'read_retail_cfo_report',
+    description: 'Read the retail agent\'s weekly CFO report from KV. Contains: weekly revenue, transaction count, avg ticket, new/lapsed customer counts, campaign spend + ROI, active goals and progress. Use this data to inform retail directives and channel prioritization.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'write_financial_directive',
     description: 'Write the weekly financial directive to D1. This is the inter-agent coordination output — every other agent reads this before their Monday run. Be specific and actionable in each directive.',
     input_schema: {
@@ -215,6 +220,8 @@ const CFO_TOOLS = [
         wholesale_margin_pct: { type: 'number' },
         retail_margin_pct:    { type: 'number' },
         catering_margin_pct:  { type: 'number' },
+        cash_on_hand:           { type: 'number', description: 'Current total cash balance from QBO bank/checking accounts' },
+        estimated_weekly_burn:  { type: 'number', description: 'Estimated weekly operating expenses (OPEX + COGS)' },
         wholesale_revenue_week: { type: 'number' },
         retail_revenue_week:    { type: 'number' },
         catering_revenue_week:  { type: 'number' },
@@ -265,10 +272,11 @@ ABOUT THE BUSINESS:
 DATA SOURCES YOU CAN ACCESS:
 - QuickBooks Online: P&L, cash flow, AR aging, expenses, transactions, estimates (pending revenue), invoices (with payment method + auto-pay status), customer balances
 - D1 database: all three channels of operational revenue + account health
+- Retail CFO Report (KV): weekly retail metrics from the retail agent — customer counts, campaign ROI, avg ticket, goal progress. Always read this to inform retail directives.
 - Performance metrics: what each agent accomplished this week
 
 HOW TO APPROACH THE ANALYSIS:
-1. Always start with fetch_qbo_profit_loss and get_d1_channel_revenue — these are your foundation
+1. Always start with fetch_qbo_profit_loss, get_d1_channel_revenue, and read_retail_cfo_report — these are your foundation
 2. Reconcile QBO vs D1 revenue. A variance >5% means something isn't categorized correctly in QBO or there's a data gap
 3. COGS is a single line in QBO right now — allocate by revenue share as proxy. Note this limitation explicitly.
 4. Use fetch_qbo_ar_aging to find overdue wholesale accounts. These are operational risks, not just accounting issues.
@@ -276,9 +284,10 @@ HOW TO APPROACH THE ANALYSIS:
 6. Use fetch_qbo_estimates to see pending wholesale orders not yet invoiced — this is your near-term revenue forecast.
 7. Use fetch_qbo_customer_balances for a full picture of outstanding receivables with contact info.
 8. Use fetch_qbo_expenses to find anomalies — anything 15%+ above 4-week average deserves a flag
-9. Use assess_cash_runway to model three scenarios. This is Drew's most important number.
-10. calculate_channel_margins gives you the strategic insight: which channel deserves more investment?
-11. Write the directive LAST — after you understand the full picture
+9. Use fetch_qbo_cash_flow to get the current bank/checking balances. Store the total in cash_on_hand when writing the directive — the dashboard needs this number live.
+10. Use assess_cash_runway to model three scenarios. This is Drew's most important number.
+11. calculate_channel_margins gives you the strategic insight: which channel deserves more investment?
+12. Write the directive LAST — after you understand the full picture. Always include cash_on_hand (total bank balance) and estimated_weekly_burn.
 
 WHAT YOU DON'T DO:
 - You do not send emails to customers or vendors
@@ -299,7 +308,19 @@ TONE: You are a sharp CFO who has advised many small businesses. You see pattern
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runCFOAgent(env));
+    ctx.waitUntil(
+      runCFOAgent(env).catch(async (err) => {
+        console.error('[CFO] Agent failed:', err.message, err.stack);
+        try {
+          await env.KV.put('cfo_last_error', JSON.stringify({
+            error: err.message,
+            stack: (err.stack || '').slice(0, 500),
+            at: new Date().toISOString(),
+          }));
+        } catch (_) {}
+        throw err; // Re-throw so orchestrator sees the failure
+      })
+    );
   },
 
   async fetch(request, env, ctx) {
@@ -323,6 +344,17 @@ export default {
         });
       }
     }
+    if (path === '/cfo/migrate') {
+      const results = [];
+      const migrations = [
+        "ALTER TABLE financial_directives ADD COLUMN cash_on_hand REAL",
+      ];
+      for (const sql of migrations) {
+        try { await env.DB.prepare(sql).run(); results.push({ sql, ok: true }); }
+        catch (e) { results.push({ sql, ok: false, error: e.message }); }
+      }
+      return new Response(JSON.stringify(results, null, 2), { headers: { 'Content-Type': 'application/json' } });
+    }
     if (path === '/cfo/debug') {
       const lastError = await env.KV.get('cfo_last_error');
       const hasKey = !!env.ANTHROPIC_API_KEY;
@@ -334,12 +366,29 @@ export default {
         last_error: lastError ? JSON.parse(lastError) : null,
       }, null, 2), { headers: { 'Content-Type': 'application/json' } });
     }
-    // Synchronous test — single Claude call to verify API works
+    // Synchronous test — single Claude call to verify API works (no tools, lightweight)
     if (path === '/cfo/test-claude') {
       try {
-        const resp = await callClaudeWithTools(env.ANTHROPIC_API_KEY, 'You are a test.', [
-          { role: 'user', content: 'Say "CFO online" in exactly two words.' }
-        ]);
+        const testResp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 50,
+            messages: [{ role: 'user', content: 'Say "CFO online" in exactly two words.' }],
+          }),
+        });
+        if (!testResp.ok) {
+          const text = await testResp.text();
+          return new Response(JSON.stringify({ error: `API ${testResp.status}: ${text.slice(0, 300)}` }), {
+            status: 502, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const resp = await testResp.json();
         return new Response(JSON.stringify({
           status: 'ok',
           stop_reason: resp.stop_reason,
@@ -475,12 +524,9 @@ When you have a complete picture, use write_financial_directive to save it, crea
     const response = await callClaudeWithTools(env.ANTHROPIC_API_KEY, CFO_SYSTEM_PROMPT + '\n\n' + brainContext, messages);
     messages.push({ role: 'assistant', content: response.content });
 
-    if (response.stop_reason === 'end_turn') {
-      console.log('[CFO] Agent completed analysis');
-      break;
-    }
-
-    // Handle any response that contains tool_use blocks (regardless of stop_reason)
+    // Handle tool_use blocks BEFORE checking stop_reason — Claude can return
+    // end_turn AND tool_use in the same response; we must always send tool_results
+    // for any tool_use blocks to keep the messages array valid.
     const toolUseBlocks = (response.content || []).filter(b => b.type === 'tool_use');
     if (toolUseBlocks.length > 0) {
       const toolResultContents = [];
@@ -498,16 +544,26 @@ When you have a complete picture, use write_financial_directive to save it, crea
         if (toolUse.name === 'write_financial_directive') directiveWritten = true;
         if (toolUse.name === 'create_financial_flag') flagsCreated++;
 
+        let serialized;
+        try { serialized = JSON.stringify(result); }
+        catch (_) { serialized = JSON.stringify({ error: 'Result not serializable' }); }
+
         toolResultContents.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,
-          content: JSON.stringify(result),
+          content: serialized,
         });
       }
 
       messages.push({ role: 'user', content: toolResultContents });
-    } else {
-      // No tool_use blocks and not end_turn — stop_reason is max_tokens or unknown
+    }
+
+    if (response.stop_reason === 'end_turn') {
+      console.log('[CFO] Agent completed analysis');
+      break;
+    }
+
+    if (toolUseBlocks.length === 0) {
       console.log(`[CFO] Unexpected stop_reason: ${response.stop_reason}, breaking loop`);
       break;
     }
@@ -565,8 +621,17 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
 
     case 'fetch_qbo_cash_flow': {
       const raw = await getCashFlow(env, input.start_date, input.end_date);
-      const cash = extractCashPosition(raw);
-      return { cash_position: cash, raw_report: raw };
+      // Also fetch Balance Sheet for actual current bank balance (Cash Flow shows period changes)
+      const bs = await getBalanceSheet(env, new Date().toISOString().split('T')[0]);
+      const cashFromBS = extractCashPosition(bs);
+      const cashFromCF = extractCashPosition(raw);
+      return {
+        current_bank_balance: cashFromBS || cashFromCF,
+        period_cash_change: cashFromCF,
+        raw_cash_flow: raw,
+        raw_balance_sheet_cash: cashFromBS,
+        note: 'Use current_bank_balance for cash_on_hand in the directive (this is from the Balance Sheet)',
+      };
     }
 
     case 'fetch_qbo_ar_aging': {
@@ -789,9 +854,33 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
       };
     }
 
-    // ── DIRECTIVE + FLAG WRITERS ─────────────────────────────────────────────
+    // ── RETAIL CFO REPORT ───────────��─────────────────────────────��─────────
+    case 'read_retail_cfo_report': {
+      try {
+        const report = await env.KV.get('retail_cfo_report', 'json');
+        if (!report) {
+          return { available: false, note: 'No retail CFO report yet. Retail agent writes this weekly.' };
+        }
+        return { available: true, ...report };
+      } catch (err) {
+        return { available: false, error: err.message };
+      }
+    }
+
+    // ── DIRECTIVE + FLAG WRITERS ──────���──────────────────────────────────────
     case 'write_financial_directive': {
       const id = crypto.randomUUID();
+
+      // Growth brake sanity check — log warnings if Claude's decision seems off
+      const brake = input.growth_brake || 0;
+      const cash = input.cash_on_hand || 0;
+      const totalRev = (input.wholesale_revenue_week || 0) + (input.retail_revenue_week || 0) + (input.catering_revenue_week || 0);
+      if (brake === 1 && cash > 20000) {
+        console.warn(`[CFO] ⚠ growth_brake=1 but cash=$${cash} (>$20K). Claude may be overly cautious. Saving anyway.`);
+      }
+      if (brake === 0 && cash > 0 && cash < 5000) {
+        console.warn(`[CFO] ⚠ growth_brake=0 but cash=$${cash} (<$5K). Claude may be ignoring low cash. Saving anyway.`);
+      }
 
       // Deactivate prior directives
       await env.DB.prepare(
@@ -804,7 +893,8 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
           wholesale_priority, retail_priority, catering_priority,
           outreach_directive, retail_directive, catering_directive, optimizer_directive,
           overdue_accounts,
-          cash_runway_weeks, cash_alert, cogs_alert, growth_brake,
+          cash_runway_weeks, cash_on_hand, estimated_weekly_burn,
+          cash_alert, cogs_alert, growth_brake,
           wholesale_margin_pct, retail_margin_pct, catering_margin_pct,
           wholesale_revenue_week, retail_revenue_week, catering_revenue_week,
           total_revenue_week,
@@ -815,7 +905,8 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
           ?, ?, ?,
           ?, ?, ?, ?,
           ?,
-          ?, ?, ?, ?,
+          ?, ?, ?,
+          ?, ?, ?,
           ?, ?, ?,
           ?, ?, ?,
           ?,
@@ -831,6 +922,8 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
         input.optimizer_directive || null,
         input.overdue_accounts || '[]',
         input.cash_runway_weeks || null,
+        input.cash_on_hand || null,
+        input.estimated_weekly_burn || null,
         input.cash_alert || 0,
         input.cogs_alert || 0,
         input.growth_brake || 0,
@@ -1164,7 +1257,23 @@ async function getLatestBrief(env) {
   const flags = await env.DB.prepare(
     "SELECT * FROM financial_flags WHERE status = 'open' ORDER BY created_at DESC"
   ).all();
-  return new Response(JSON.stringify({ directive, flags: flags.results }, null, 2), {
+  // Historical directives for sparkline trends (last 8 weeks)
+  const history = await env.DB.prepare(`
+    SELECT week_start, wholesale_revenue_week, retail_revenue_week, catering_revenue_week,
+           total_revenue_week, cash_runway_weeks
+    FROM financial_directives
+    WHERE week_start IS NOT NULL
+    ORDER BY week_start DESC LIMIT 8
+  `).all().catch(() => ({ results: [] }));
+  // Live pulse from KV
+  let live = null;
+  try { const liveStr = await env.KV.get('cfo_live'); if (liveStr) live = JSON.parse(liveStr); } catch {}
+  return new Response(JSON.stringify({
+    directive,
+    flags: flags.results,
+    history: (history.results || []).reverse(),
+    live,
+  }, null, 2), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
@@ -1207,7 +1316,9 @@ async function sendGmail(env, { to, subject, body }) {
   });
   const { access_token } = await tokenResp.json();
   const message = [`To: ${to}`, `From: Pretzel OS <${env.FROM_EMAIL}>`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
-  const encoded = btoa(unescape(encodeURIComponent(message))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(message);
+  const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+  const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
