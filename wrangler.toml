@@ -65,6 +65,7 @@ crons = [
   "0 15 1 * *",      # Tier 5 monthly acceptance: 1st of month 9am MT (15:00 UTC) — full-year replay vs QBO truth, alert on drift >2%
   "0 14 28 * *",     # Mercury IO statement reminder: 28th of each month 8am MT (14:00 UTC) — email Drew to upload latest Mercury IO statement
   "0 16 * * *",      # Catering Reactivation 2026: daily 10am MT (16:00 UTC) — sends up to 18/day, auto-stops when cohort cleared
+  "0 3 * * *",       # D1 → R2 backup: daily 3am UTC (~9pm MT) — full SQL dump to pretzel-pos-data/d1-backups/
 ]
 
 # ── Queues (Reply Handler) ─────────────────────────────────
@@ -150,6 +151,15 @@ class_name = "RetailBackfillWorkflow"
 binding = "POS_DATA_BUCKET"
 bucket_name = "pretzel-pos-data"
 
+# ── R2 (D1 backups — same bucket, namespaced under d1-backups/) ──
+# Foundation Safety Workstream 1, Task 3b — daily cron writes here.
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "pretzel-pos-data"
+
+# ── D1 backup config (read by workers/d1-backup.js) ──────────
+# CLOUDFLARE_API_TOKEN is set via `wrangler secret put` (not in this file)
+
 # ── Vectorize (voice style embeddings for outreach) ──────────
 [[vectorize]]
 binding = "VECTORIZE"
@@ -161,6 +171,8 @@ binding = "AI"
 
 [vars]
 CF_ACCOUNT_ID = "f399e3bcd5ea1501830d0ad1d35d9da3"
+CLOUDFLARE_ACCOUNT_ID = "f399e3bcd5ea1501830d0ad1d35d9da3"  # for d1-backup.js (REST API export)
+D1_DATABASE_ID = "950cc9e0-9dd2-4f78-af55-de6385ab293b"     # pretzel-os production
 FROM_EMAIL = "drew@dangerouspretzel.com"
 DREW_EMAIL = "drew@dangerouspretzel.com"
 BRAND_NAME = "Dangerous Pretzel Co"

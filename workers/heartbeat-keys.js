@@ -69,6 +69,10 @@ export const HEARTBEATS = {
   monthly_depreciation:  { cadence_min: 43200 },  // monthly 1st of month
   tier5_monthly:         { cadence_min: 43200 },  // monthly 1st of month
   mercury_io_reminder:   { cadence_min: 43200 },  // monthly 28th
+
+  // Foundation Safety Workstream 1 (May 26 2026): D1 → R2 daily backup.
+  // CRITICAL: if this stops firing, we lose recovery beyond the 30-day Time Travel window.
+  d1_backup:             { cadence_min: 1440, critical: true },  // daily 3am UTC
 };
 
 // Returns the cadence_min for a given agent, defaulting to 60 if unregistered.

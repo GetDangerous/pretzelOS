@@ -47,6 +47,7 @@ import { default as codeExpirationCleaner } from './code-expiration-cleaner.js';
 import { default as finance, runDailyClose as financeDailyClose, runFinanceMonthlyClose, runFinanceWeeklyDirective, runFinanceDailyRecon } from './finance-worker.js';
 import { runTier1 as financeAuditTier1, runTier2 as financeAuditTier2 } from './finance-audit-engine.js';
 import { sendDailyMorningBrief as financeDailyPulse } from './finance-email-briefs.js';
+import { runD1Backup, handleD1BackupRequest } from './d1-backup.js';
 export { RetailBackfillWorkflow } from './retail-backfill-workflow.js';
 
 // ── Tracked cron wrapper — logs every run to cron_runs table ─────────
@@ -607,6 +608,13 @@ export default {
         return { alerted: true, age_hours: ageHrs.toFixed(1), read_only: readOnly, freshness_updated: true };
       }));
     }
+
+    // Daily 3am UTC — D1 full SQL export to R2 (Foundation Safety Workstream 1, Task 3b)
+    // Backup file lands at pretzel-pos-data/d1-backups/{daily|weekly|monthly}/pretzel-os-YYYY-MM-DD.sql
+    // Status visible at GET /finance/backup/status; manual trigger at POST /finance/backup/run.
+    if (cron === '0 3 * * *') {
+      ctx.waitUntil(trackedRun(env, 'd1_backup', cron, () => runD1Backup(env, { triggeredBy: 'cron' })));
+    }
   },
 
   // ── Queue consumer (reply + cross-channel signals) ─────────
@@ -1041,6 +1049,12 @@ export default {
     // CFO Agent + CFO Pulse live endpoint
     if (path === '/cfo/live' || path === '/cfo/pulse') return withCors(await cfoPulse.fetch(request, env, ctx));
     if (path.startsWith('/cfo/')) return withCors(await cfo.fetch(request, env, ctx));
+
+    // D1 backup endpoints (Foundation Safety Workstream 1, Task 3b)
+    // Intercept BEFORE the /finance/ catch-all so backup routes don't fall through to finance-worker.
+    if (path === '/finance/backup/run' || path === '/finance/backup/status') {
+      return withCors(await handleD1BackupRequest(request, env));
+    }
 
     // Finance v2 (Wave 1+ native bookkeeping endpoints)
     if (path.startsWith('/finance/')) return withCors(await finance.fetch(request, env, ctx));
