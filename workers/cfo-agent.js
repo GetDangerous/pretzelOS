@@ -46,6 +46,8 @@ import {
   extractAROverdue,
 } from './qbo-client.js';
 import { loadBrain } from './brain-loader.js';
+import { getCanonicalCashOnHand, getCanonicalRunway, getCanonicalWeeklyBurn } from './finance-shared.js';
+import { callAI } from './ai-budget.js';
 
 const MAX_AGENT_LOOPS = 10;  // CFO needs more rounds — it's thorough
 const CASH_RUNWAY_ALERT_WEEKS = 8;
@@ -308,19 +310,17 @@ TONE: You are a sharp CFO who has advised many small businesses. You see pattern
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(
-      runCFOAgent(env).catch(async (err) => {
-        console.error('[CFO] Agent failed:', err.message, err.stack);
-        try {
-          await env.KV.put('cfo_last_error', JSON.stringify({
-            error: err.message,
-            stack: (err.stack || '').slice(0, 500),
-            at: new Date().toISOString(),
-          }));
-        } catch (_) {}
-        throw err; // Re-throw so orchestrator sees the failure
-      })
-    );
+    return runCFOAgent(env).catch(async (err) => {
+      console.error('[CFO] Agent failed:', err.message, err.stack);
+      try {
+        await env.KV.put('cfo_last_error', JSON.stringify({
+          error: err.message,
+          stack: (err.stack || '').slice(0, 500),
+          at: new Date().toISOString(),
+        }));
+      } catch (_) {}
+      throw err; // Re-throw so orchestrator sees the failure
+    });
   },
 
   async fetch(request, env, ctx) {
@@ -369,30 +369,24 @@ export default {
     // Synchronous test — single Claude call to verify API works (no tools, lightweight)
     if (path === '/cfo/test-claude') {
       try {
-        const testResp = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 50,
-            messages: [{ role: 'user', content: 'Say "CFO online" in exactly two words.' }],
-          }),
+        // DIF-3 (May 13 2026): wired through ai-budget
+        const result = await callAI(env, {
+          use_case: 'cfo_health_check',
+          model: 'haiku',
+          caller: 'cfo-agent.js',
+          max_tokens: 50,
+          messages: [{ role: 'user', content: 'Say "CFO online" in exactly two words.' }],
         });
-        if (!testResp.ok) {
-          const text = await testResp.text();
-          return new Response(JSON.stringify({ error: `API ${testResp.status}: ${text.slice(0, 300)}` }), {
+        if (!result.ok) {
+          const errText = result.blocked_reason || result.error || 'unknown';
+          return new Response(JSON.stringify({ error: `API: ${errText}` }), {
             status: 502, headers: { 'Content-Type': 'application/json' },
           });
         }
-        const resp = await testResp.json();
         return new Response(JSON.stringify({
           status: 'ok',
-          stop_reason: resp.stop_reason,
-          content: resp.content,
+          stop_reason: result.stop_reason,
+          content: result.raw?.content,
         }, null, 2), { headers: { 'Content-Type': 'application/json' } });
       } catch (err) {
         return new Response(JSON.stringify({
@@ -457,6 +451,21 @@ export default {
       const body = await request.json();
       return resolveFlag(body.flag_id, body.note, env);
     }
+    // V3 Item 2.19 — snooze a flag for N days (default 7) without resolving.
+    if (path === '/cfo/flags/snooze' && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        const flagId = body.flag_id;
+        const days = Math.max(1, Math.min(90, parseInt(body.days || 7, 10)));
+        if (!flagId) return new Response(JSON.stringify({ error: 'flag_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        await env.DB.prepare(
+          `UPDATE financial_flags SET snooze_until = datetime('now', '+' || ? || ' days') WHERE id = ?`
+        ).bind(days, flagId).run();
+        return new Response(JSON.stringify({ ok: true, flag_id: flagId, snoozed_days: days }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
     if (path === '/cfo/reports') {
       return getReportHistory(env);
     }
@@ -483,6 +492,21 @@ export default {
     return new Response('CFO Agent — Pretzel OS', { status: 200 });
   }
 };
+
+// ── DATE VALIDATOR ────────────────────────────────────────────────────────────
+// Bug 1.2 fix — accept an order/invoice date string only if it parses and is
+// not in the future. QBO recurring invoices and scheduled transactions can
+// carry a TxnDate past today; treating those as real fulfillment events
+// makes silent accounts look healthy. Returns the sanitized YYYY-MM-DD on
+// success, null on rejection.
+function validateOrderDate(rawDate, todayIso) {
+  if (!rawDate || typeof rawDate !== 'string') return null;
+  const iso = rawDate.slice(0, 10); // "2026-04-30" from either "2026-04-30" or "2026-04-30T12:00:00Z"
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const today = todayIso || new Date().toISOString().split('T')[0];
+  if (iso > today) return null;
+  return iso;
+}
 
 // ── MAIN RUN ──────────────────────────────────────────────────────────────────
 async function runCFOAgent(env) {
@@ -521,7 +545,7 @@ When you have a complete picture, use write_financial_directive to save it, crea
   while (loops < MAX_AGENT_LOOPS) {
     loops++;
 
-    const response = await callClaudeWithTools(env.ANTHROPIC_API_KEY, CFO_SYSTEM_PROMPT + '\n\n' + brainContext, messages);
+    const response = await callClaudeWithTools(env, CFO_SYSTEM_PROMPT + '\n\n' + brainContext, messages);
     messages.push({ role: 'assistant', content: response.content });
 
     // Handle tool_use blocks BEFORE checking stop_reason — Claude can return
@@ -620,17 +644,41 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
     }
 
     case 'fetch_qbo_cash_flow': {
-      const raw = await getCashFlow(env, input.start_date, input.end_date);
-      // Also fetch Balance Sheet for actual current bank balance (Cash Flow shows period changes)
-      const bs = await getBalanceSheet(env, new Date().toISOString().split('T')[0]);
-      const cashFromBS = extractCashPosition(bs);
-      const cashFromCF = extractCashPosition(raw);
+      // CANONICAL CASH (Mercury live, source of truth — QBO Mercury feed
+      // disconnected ~60 days ago and shows stale balances).
+      const canonical = await getCanonicalCashOnHand(env);
+
+      // Still fetch QBO cash flow for period change (P&L-like view), but the
+      // QBO Balance Sheet number is logged side-by-side for audit only.
+      const raw = await getCashFlow(env, input.start_date, input.end_date).catch(() => null);
+      const bs  = await getBalanceSheet(env, new Date().toISOString().split('T')[0]).catch(() => null);
+      const cashFromBS = bs ? extractCashPosition(bs) : null;
+      const cashFromCF = raw ? extractCashPosition(raw) : null;
+
+      const qboBsDrift = cashFromBS != null
+        ? Math.round((cashFromBS - canonical.total) * 100) / 100
+        : null;
+
+      // Log drift to audit so we have a paper trail of QBO staleness
+      if (qboBsDrift != null && Math.abs(qboBsDrift) > 100) {
+        await env.DB.prepare(`
+          INSERT INTO finance_audit_log (id, action_type, entity_type, entity_id, actor, description, after_json)
+          VALUES (?, 'qbo_cash_drift', 'mercury_accounts', 'cfo_agent_check', 'cfo_agent', ?, ?)
+        `).bind(
+          crypto.randomUUID(),
+          `QBO Balance Sheet cash $${cashFromBS} differs from live Mercury $${canonical.total} by $${qboBsDrift}`,
+          JSON.stringify({ qbo_bs: cashFromBS, mercury_live: canonical.total, drift: qboBsDrift }),
+        ).run().catch(() => {});
+      }
+
       return {
-        current_bank_balance: cashFromBS || cashFromCF,
+        current_bank_balance: canonical.total,           // CANONICAL — use this
+        canonical_breakdown: canonical.breakdown,
+        canonical_source: canonical.source,
         period_cash_change: cashFromCF,
-        raw_cash_flow: raw,
-        raw_balance_sheet_cash: cashFromBS,
-        note: 'Use current_bank_balance for cash_on_hand in the directive (this is from the Balance Sheet)',
+        qbo_balance_sheet_cash: cashFromBS,              // logged for comparison only
+        qbo_drift_vs_canonical: qboBsDrift,
+        note: 'current_bank_balance is LIVE from Mercury API. QBO BS cash is shown only for drift detection — DO NOT use it for cash_on_hand. The Mercury feed disconnected from QBO ~60 days ago.',
       };
     }
 
@@ -671,13 +719,15 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
       const days = input.days_back || 7;
       const [retail, wholesale, catering] = await Promise.all([
         // Retail = Toast/Square POS orders (exclude wholesale + catering)
+        // NOTE: 'square_delivery' was previously missing from this list,
+        // silently dropping ~$3K/wk of delivery revenue from the directive.
         env.DB.prepare(`
           SELECT
             SUM(gross_revenue) as revenue,
             COUNT(*) as order_count,
             AVG(gross_revenue) as avg_order
           FROM orders
-          WHERE source IN ('toast', 'toast_live', 'toast_tsv', 'square')
+          WHERE source IN ('toast', 'toast_live', 'toast_tsv', 'toast_csv', 'square', 'square_delivery')
             AND source NOT IN ('toast_catering', 'qbo_wholesale')
             AND order_date >= date('now', '-${days} days')
         `).first(),
@@ -871,6 +921,44 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
     case 'write_financial_directive': {
       const id = crypto.randomUUID();
 
+      // ─── CANONICAL OVERRIDE ──────────────────────────────────────────────
+      // The agent may have submitted stale or hallucinated values. Validate
+      // cash + runway against canonical and override if they drift.
+      const canonCash = await getCanonicalCashOnHand(env);
+      const canonRunway = await getCanonicalRunway(env, canonCash.total);
+      const canonBurn = await getCanonicalWeeklyBurn(env);
+
+      const overrides = [];
+      if (input.cash_on_hand != null && Math.abs((input.cash_on_hand || 0) - canonCash.total) > 500) {
+        overrides.push(`cash_on_hand: agent=${input.cash_on_hand} → canonical=${canonCash.total}`);
+        input.cash_on_hand = canonCash.total;
+      } else if (input.cash_on_hand == null) {
+        input.cash_on_hand = canonCash.total;
+      }
+
+      if (input.cash_runway_weeks != null && canonRunway.weeks != null && Math.abs((input.cash_runway_weeks || 0) - canonRunway.weeks) > 4) {
+        overrides.push(`cash_runway_weeks: agent=${input.cash_runway_weeks} → canonical=${canonRunway.weeks}`);
+        input.cash_runway_weeks = canonRunway.weeks;
+      } else if (input.cash_runway_weeks == null) {
+        input.cash_runway_weeks = canonRunway.weeks;
+      }
+
+      if (input.estimated_weekly_burn == null) {
+        input.estimated_weekly_burn = canonBurn.weekly_burn;
+      }
+
+      if (overrides.length) {
+        console.warn(`[CFO] CANONICAL OVERRIDE applied to write_financial_directive: ${overrides.join(' | ')}`);
+        await env.DB.prepare(`
+          INSERT INTO finance_audit_log (id, action_type, entity_type, entity_id, actor, description, after_json)
+          VALUES (?, 'cfo_canonical_override', 'financial_directives', ?, 'cfo_agent', ?, ?)
+        `).bind(
+          crypto.randomUUID(), id,
+          `Canonical override on directive write: ${overrides.join(' | ')}`,
+          JSON.stringify({ overrides, canonical_cash: canonCash.total, canonical_runway: canonRunway.weeks, canonical_burn: canonBurn.weekly_burn }),
+        ).run().catch(() => {});
+      }
+
       // Growth brake sanity check — log warnings if Claude's decision seems off
       const brake = input.growth_brake || 0;
       const cash = input.cash_on_hand || 0;
@@ -922,7 +1010,12 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
         input.optimizer_directive || null,
         input.overdue_accounts || '[]',
         input.cash_runway_weeks || null,
-        input.cash_on_hand || null,
+        // cash_on_hand intentionally NULL (Reset plan Phase 2, Apr 30 2026):
+        // stored value goes stale within minutes of the directive write. Every
+        // consumer (Monday digest, dashboard, audit) now reads from the
+        // canonical helper getCanonicalCashOnHand() in finance-shared.js
+        // instead. The column stays in the schema (vestigial) for safety.
+        null,
         input.estimated_weekly_burn || null,
         input.cash_alert || 0,
         input.cogs_alert || 0,
@@ -962,25 +1055,39 @@ async function executeTool(toolName, input, reportId, weekStart, env) {
 
     case 'create_financial_flag': {
       const flagId = crypto.randomUUID();
+      // Normalize null entity_name to '(global)' so UNIQUE(entity_name, flag_type, week_start) works.
+      const entityName = input.entity_name || '(global)';
 
+      // UPSERT: if a flag already exists for this (entity, type, week), bump dedupe_count
+      // and refresh fields instead of creating a duplicate row. See migration 026.
       await env.DB.prepare(`
         INSERT INTO financial_flags (
           id, report_id, week_start,
           flag_type, severity, channel, entity_name,
           title, detail, data_point, suggested_action,
-          status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', datetime('now'))
+          status, created_at, dedupe_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', datetime('now'), 1)
+        ON CONFLICT(entity_name, flag_type, week_start) DO UPDATE SET
+          dedupe_count     = dedupe_count + 1,
+          severity         = excluded.severity,
+          title            = excluded.title,
+          detail           = excluded.detail,
+          data_point       = excluded.data_point,
+          suggested_action = excluded.suggested_action,
+          report_id        = excluded.report_id,
+          channel          = excluded.channel,
+          status           = CASE WHEN financial_flags.status = 'resolved' THEN 'resolved' ELSE 'open' END
       `).bind(
         flagId, reportId, weekStart,
         input.flag_type, input.severity,
         input.channel || 'all',
-        input.entity_name || null,
+        entityName,
         input.title, input.detail,
         input.data_point || null,
         input.suggested_action
       ).run();
 
-      console.log(`[CFO] Flag created: ${input.severity} — ${input.title}`);
+      console.log(`[CFO] Flag upserted: ${input.severity} — ${input.title} (${entityName})`);
       return { success: true, flag_id: flagId };
     }
 
@@ -1051,12 +1158,18 @@ async function syncQBOAccountData(env) {
   }
 
   // Aggregate invoice data per customer
+  // Bug 1.2 fix — reject future-dated invoices (QBO recurring/scheduled invoices
+  // sometimes carry TxnDate in the future; they're not real fulfillment events
+  // and would mislabel accounts as "fresh" when they've actually gone silent).
+  const todayIso = new Date().toISOString().split('T')[0];
   const customerData = {};
+  let futureDropped = 0;
   for (const inv of invoices) {
     const name = inv.customer || '';
     const normName = normalize(name);
     const amount = parseFloat(inv.total || 0);
-    const date = inv.date || '';
+    const date = validateOrderDate(inv.date, todayIso);
+    if (!date) { futureDropped++; continue; }
 
     if (!customerData[normName]) {
       customerData[normName] = { name, totalRev: 0, lastDate: '', invoiceCount: 0 };
@@ -1065,6 +1178,7 @@ async function syncQBOAccountData(env) {
     customerData[normName].invoiceCount++;
     if (date > customerData[normName].lastDate) customerData[normName].lastDate = date;
   }
+  if (futureDropped) console.log(`[CFO] Dropped ${futureDropped} future-dated invoices during sync`);
 
   // Match and update
   // Also extract venue names from line_item descriptions (e.g., "Pretzels - Wholesale:The Union - 7oz")
@@ -1216,9 +1330,11 @@ async function getActiveDirective(env) {
 }
 
 async function getOpenFlags(env) {
+  // V3 Item 2.19 — exclude flags currently snoozed into the future.
   const flags = await env.DB.prepare(`
     SELECT * FROM financial_flags
     WHERE status = 'open'
+      AND (snooze_until IS NULL OR snooze_until <= datetime('now'))
     ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
              created_at DESC
   `).all();
@@ -1279,28 +1395,23 @@ async function getLatestBrief(env) {
 }
 
 // ── CLAUDE API ────────────────────────────────────────────────────────────────
-async function callClaudeWithTools(apiKey, systemPrompt, messages) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,   // CFO needs room to think
-      system: systemPrompt,
-      tools: CFO_TOOLS,
-      messages,
-    }),
+// DIF-3 (May 13 2026): wired through ai-budget
+async function callClaudeWithTools(env, systemPrompt, messages) {
+  const result = await callAI(env, {
+    use_case: 'cfo_financial_decision',
+    model: 'sonnet',
+    caller: 'cfo-agent.js',
+    max_tokens: 4000,   // CFO needs room to think
+    system: systemPrompt,
+    tools: CFO_TOOLS,
+    messages,
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${text}`);
+  if (!result.ok) {
+    throw new Error(`Claude API error: ${result.blocked_reason || result.error || 'unknown'}`);
   }
-  return response.json();
+  // Preserve original Anthropic response shape (raw content blocks + stop_reason)
+  // so the agent loop can push the assistant message and filter tool_use blocks.
+  return result.raw || { content: [], stop_reason: result.stop_reason };
 }
 
 async function sendGmail(env, { to, subject, body }) {

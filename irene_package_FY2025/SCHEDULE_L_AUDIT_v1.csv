@@ -1,0 +1,64 @@
+Phase 33-A — YE2024 Schedule L Source-of-Truth Audit
+Generated: 2026-05-20
+Purpose: Tie each filed 1065 Schedule L line to underlying source-of-truth document. Variances documented per P1/P2 principles (filed return is immutable; source-of-truth may differ; document both views).
+
+#,Filed Schedule L Line,Filed Amount,Source-of-Truth Computation,Source-of-Truth Amount,Variance (filed - SOT),Tolerance,Treatment,Pretzel OS Target JE
+1,Line 1 Cash,35119,Mercury Checking bank statement closing 2024-12-31 = $34961.75 (bank_statement_balances PDF source). Rounded whole dollar = $34962.,34962,157,exact-required,Use filed $35119 for OB; document $157 variance as small petty cash / Cash Clearing residual per DEC4,DR Mercury Checking $34962; DR Cash Clearing residual $157
+2,Line 6 Bridge BLOQ Reimbursement Receivable (Statement 5),123401,Bridge BLOQ lease agreement TI reimbursement section (Lease - Dangerous Pretzel Co-1638905-v2.pdf). Receivable was collected via Mercury inflow Feb 2025.,123401,0,exact-required,Use filed $123401 for OB; cite Bridge BLOQ lease section,DR Bridge BLOQ Receivable $123401 / CR Leasehold Improvements $123401 (Section 110 basis reduction per filed Form 4562 Reduction in Basis blank — see note)
+3,Line 9a Buildings gross,627223,Form 4562 Asset Schedule sum: Leasehold $438100 + Furniture & Fixtures $2744 + Restaurant Equipment $177409 + Signage $8970 = $627223 EXACT,627223,0,exact-required,Use filed; tie cent-accurate to Form 4562 asset listing,DR Leasehold Improvements $438100; DR Furniture & Fixtures $2744; DR Restaurant Equipment $177409; DR Signage $8970
+4,Line 9b Accumulated Depreciation,57784,Form 4562 Part IV Line 22 Total Current Year Dep = $57784 EXACT (Leasehold $14604 + F&F $1803 + Equipment $35482 + Signage $5895),57784,0,exact-required,Use filed; tie to Form 4562,CR Accumulated Depreciation $57784
+5,Line 12a Intangibles gross,70900,Form 4562 Part VI Startup Expenses amortizable amount = $70900 EXACT (180-month amort starting 07/01/24),70900,0,exact-required,Use filed; tie to Form 4562 Part VI,DR Intangibles:Startup Expenses $70900
+6,Line 12b Accumulated Amortization,2363,Form 4562 Part VI Line 44 = $2363 EXACT (= $70900 / 180 months × 6 months Jul-Dec 2024),2363,0,exact-required,Use filed; tie to Form 4562 Part VI Line 44,CR Accumulated Amortization $2363
+7,Line 13 Other Assets (Statement 6 Security Deposits),20932,Bridge BLOQ lease security deposit per lease agreement,20932,0 (verify exact),exact-required,Use filed; cite Bridge BLOQ lease security deposit section,DR Security Deposits $20932
+8,Line 17 Other Current Liabilities — TOTAL (Statement 7),223813,Sum of components below = $223813 EXACT,223813,0,exact-required,Sum check only,N/A — see components 8a-8f
+8a,Statement 7 Credit Card Payable,2774,Mercury Credit (IO Card) statement Dec 2024 closing balance = $2941.37; Jan 15 prelim PDF showed $2941.37; filed reduced to $2774,2941,-167,$200 acceptable variance,Use filed $2774; document $167 variance — likely bookkeeper closing-balance adjustment or cashback timing,CR Mercury Credit (or generic Credit Card Payable) $2774
+8b,Statement 7 N/P LEAF (4 loans combined),134855,Sum of 4 LEAF lease amortization schedules at YE2024: Pizza Ovens (App 902878) $60393.34 + Kemper Bakery (App 875130) $25939.18 + Comm Kitchen-2 (App 906769) $26087.91 + Commercial Kitchen Supply (App 890331) $22434.01 = $134854.44,134854,1,exact-required ($1 tolerance for rounding),Use filed $134855; tie to 4 LEAF lease PDFs + amortization schedules at 9.49-9.50% APR,CR N/P LEAF Pizza Ovens $60393; CR N/P LEAF Kemper Bakery $25939; CR N/P LEAF Comm Kitchen-2 $26088; CR N/P LEAF Commercial Kitchen Supply $22435
+8c,Statement 7 N/P Toast,3874,Jan 15 PDF Note Payable - Toast at YE2024 = $3873.83 (small Toast equipment financing note; agreement not in our possession),3874,0,$10 acceptable variance,Use filed; source = bookkeeper-recorded Toast equipment financing note (original agreement may be inaccessible — per DEC3),CR N/P Toast $3874
+8d,Statement 7 N/P Todd and Amanda,80000,Settlement and Release Agreement dated Dec 18 2024 (Effective Date). Final Settlement Payment of $80000 owed within 60 days. $20K First Settlement Payment paid pre-YE2024 (Jan 15 PDF shows T&A note dropped $81632 → $61632 in Dec 2024 reflecting the $20K payment; bookkeeper later restructured for filing).,80000,0,exact-required,Use filed; tie to Settlement Agreement Section 2; this is a SETTLEMENT PAYABLE not a traditional loan,CR Settlement Payable - Todd and Amanda $80000 (account internally renamed for clarity but ties to filed N/P Todd and Amanda)
+8e,Statement 7 Payroll Payable,856,toast_payroll_gl: last 2024 check date was 2024-12-27. Next pay would be ~2025-01-03 covering Dec 28-31 = 4 days. Daily rate ~$120/day × 4 + ~10% employer tax + Toast Payroll fee ≈ $500-900. Filed $856 falls in expected range.,~700,~150,$200 acceptable variance,Use filed $856; tie to toast_payroll_gl Dec 27 2024 + 4-day Dec 28-31 accrual,CR Payroll Payable $856
+8f,Statement 7 Sales Tax Payable,1454,Mercury Feb 6 2025 Utah801/297-7703 outflows: $1287.91 + $165.58 = $1453.49 (Q4 2024 Utah TC-62 sales tax filing paid Feb 2025). Matches within $0.51.,1453,1,$5 acceptable variance,Use filed $1454; tie to Mercury Feb 6 2025 UTAH801 outflows,CR Sales Tax Payable $1454
+9,Line 21 Partners' Capital — Drew Sparks,296807,Statement 8 Partner 1: $0 beg + $396588 contributed - $99781 M-2 Lines 3+4+7 share = $296807,296807,0,exact-required,Use filed; tie to Statement 8 Partner Capital Account Summary,CR Partner Investments:Drew Sparks $296807
+10,Line 21 Partners' Capital — Lindsay Sparks,296808,Statement 8 Partner 2: $0 beg + $396588 contributed - $99780 M-2 Lines 3+4+7 share = $296808,296808,0,exact-required,Use filed; tie to Statement 8,CR Partner Investments:Lindsay Sparks $296808
+11,Line 21 Partners' Capital — TOTAL,593615,Drew $296807 + Lindsay $296808 = $593615 EXACT,593615,0,exact-required,Sum check only,N/A — sum of 9 and 10
+12,Line 14 TOTAL ASSETS,817428,Line 1 + Line 6 + Line 9c (net) + Line 12c (net) + Line 13 = 35119 + 123401 + 569439 + 68537 + 20932 = $817428 EXACT,817428,0,exact-required,Sum check only,N/A
+13,Line 22 TOTAL LIAB + EQUITY,817428,Line 17 + Line 21 = $223813 + $593615 = $817428 EXACT,817428,0,exact-required,Sum check only — must equal Line 14,N/A — balanced
+
+NOTES:
+
+(A) Bridge BLOQ Section 110 treatment per Form 4562: The Form 4562 Reduction in Basis column is BLANK for Leasehold Improvements. This means the bookkeeper did NOT apply Section 110 basis reduction at YE2024. The $123401 sits as a Reimbursement Receivable (current asset) at YE2024. The Section 110 basis reduction may occur in 2025 when cash is received, OR the bookkeeper may not have elected Section 110 (in which case the $123401 could be deferred income to recognize in 2025). DREW MUST CLARIFY WITH IRENE: did the 2024 filing apply Section 110 election to the Bridge BLOQ TI reimbursement, or was this recorded as a pending receivable to be addressed in 2025?
+
+(B) T&A Settlement structure: Per Settlement Agreement (signed Dec 10/18 2024), Todd & Amanda Sparks ("Exiting Members") had previously been members of DPC. Total settlement = $100000 ($20K First Payment due within 24 hours of Effective Date Dec 18 2024 + $80K Final Settlement Payment due within 60 days). Schedule B-1 of filed 1065 shows only Drew + Lindsay as partners — T&A were already exited per the bookkeeper's treatment at YE2024. The $80K liability is a Settlement Payable, NOT a traditional loan. For "T&A doesn't exist on paper" directive: filed return shows $80K as creditor liability only (no T&A K-1, no T&A equity). After March 2025 cash payment, balance is $0 forever.
+
+(C) Cash $157 variance: Filed $35119 vs bank $34961.75 (rounded $34962). $157 likely represents petty cash drawer + Cash Clearing residual at YE2024. Per DEC4 Drew confirms treating as small reconciling item.
+
+(D) Credit Card Payable $167 variance: Mercury Credit Dec 2024 statement closing $2941.37 vs filed $2774. The $167 variance may be:
+   - Cashback adjustment ($44.09 cashback shown on statement)
+   - Statement period vs calendar period boundary
+   - Bookkeeper closing-balance adjustment
+Treatment: Use filed $2774; document as variance per DEC2.
+
+(E) N/P Toast $3874: Toast equipment financing agreement not in our possession (per DEC3). The Jan 15 PDF shows the note amortizing from $5593.06 (June 2024) → $3873.83 (Dec 2024), suggesting ~$200/month principal paydown over 7 months. Going forward, Mercury outflows to "Toast, Inc" (~$1180/mo) include both this note paydown AND Toast SaaS subscription fees. Bookkeeper-recorded value used for OB.
+
+(F) LEAF Lease summary (verified from 4 lease PDFs Drew provided):
+  - App 875130 (Kemper Bakery): Originated Jan 25 2024, P=$30550, n=60mo, M=$641.55, APR ≈9.49%, YE2024 balance $25939.18
+  - App 890331 (Commercial Kitchen Supply addendum): Originated Feb 5 2024, addendum to master agreement, n=59mo, M=$554.15, principal funded $26040.65, APR ≈9.49%, YE2024 balance $22434.01
+  - App 902878 (Pizza Ovens): Originated Mar 19 2024, P=$68752, n=60mo, M=$1443.79, APR ≈9.50%, YE2024 balance $60393.34
+  - App 906769 (Comm Kitchen - 2 addendum): Originated Mar 28 2024, addendum, n=58mo, M=$633.85, derived principal $29388, APR ≈9.50%, YE2024 balance $26087.91
+  - Sum YE2024 = $134854.44 vs filed $134855 = $0.56 rounding difference ✓
+
+(G) Equity bridge for M-2 reconciliation (each partner 50/50):
+  - Drew Sparks contributed $396588 cash in 2024, ending capital $296807
+  - Lindsay Sparks contributed $396588 cash in 2024, ending capital $296808
+  - $100 ending capital difference is rounding allocation
+  - Total cash contributed YE2024 = $793176 (per M-2 Line 2a)
+  - These contributions need to be sourced from actual Mercury inflows during 2024 (pre-Pretzel-OS Mercury sync window — would be on Mercury Aug 2023 - Dec 2024 statement PDFs)
+  - The $750000 "Note Payable - Drew & Lindsay" on Jan 15 PDF was reclassified to equity per Irene's filing decision (DEC: F2)
+  - No 2024 distributions per filed M-2 Line 6 = $0
+  - $813 M-2 Line 7 = 50% M&E disallowance allocation
+
+OPEN QUESTIONS FOR DREW:
+1. Bridge BLOQ Section 110: Did Irene elect Section 110 on the 2024 filing? Form 4562 shows no basis reduction, so the Section 110 election may not have been made — the $123401 sits as a receivable.
+2. T&A March 2025 $80K payment: Was Feb 13 2025 $80K Chase transfer OR Mar 3 2025 $80K Wells Fargo transfer the T&A Final Settlement Payment? (Or both for separate purposes?)
+3. Mercury Credit YE2024 $167 variance: Is this acceptable to leave as undocumented variance?
+4. N/P Toast: Should we attempt to obtain the Toast equipment financing agreement from Drew's Toast account, or accept bookkeeper value as filed?
+5. Drew & Lindsay 2024 contribution source-trace: Should we verify the $793176 cash contributions tied to specific Mercury inflows from Aug 2023 onward (per Mercury statement PDFs)? Or accept filed M-2 as authoritative?

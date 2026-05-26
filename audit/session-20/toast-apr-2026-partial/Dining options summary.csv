@@ -1,0 +1,10 @@
+Dining option,Orders,Net sales,Discount amount,Gross sales,Tax amount
+Uber Eats - Delivery,15,321.03,0.0,321.03,30.34
+DoorDash - Delivery,95,2167.08,0.0,2167.08,175.68
+Dine In,156,2859.5,84.5,2944.0,268.98
+Take Out,233,3389.3,177.7,3567.0,318.93
+DoorDash - Takeout,1,13.8,0.0,13.8,0.98
+Curbside,13,203.0,0.0,203.0,19.11
+Toast Delivery Services,1,21.0,0.0,21.0,1.68
+Grubhub - Delivery,1,15.0,0.0,15.0,1.4
+Total,515,8989.71,262.2,9251.91,817.10

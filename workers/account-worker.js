@@ -22,6 +22,8 @@
  */
 
 import { loadBrain } from './brain-loader.js';
+import { getCanonicalCashOnHand, getCanonicalRunway, getCanonicalWeeklyRevenue } from './finance-shared.js';
+import { callAI } from './ai-budget.js';
 // Brain loaded by other agents that import from this worker
 
 const REORDER_WINDOW_DAYS = 21;     // Flag if no order in 21 days
@@ -45,14 +47,14 @@ export default {
   async scheduled(event, env, ctx) {
     if (event.cron === '0 10 * * *') {
       // Daily 4am MT — Toast POS data sync (orders + customer names)
-      ctx.waitUntil(syncToastData(env, 1));
+      return syncToastData(env, 1);
     } else if (event.cron === '0 20 * * *') {
       // Daily 2pm MT — Send review request SMS to yesterday's customers
       // First re-enrich any new orders with guestbook data, then send reviews
-      ctx.waitUntil(enrichAndSendReviews(env));
+      return enrichAndSendReviews(env);
     } else {
       // Monday 9am MT — Account health + Drew digest
-      ctx.waitUntil(runAccountHealth(env));
+      return runAccountHealth(env);
     }
   },
 
@@ -973,6 +975,14 @@ async function sendReviewSMS(phone, customerName, orderId, env) {
 
   // Step 1: Find or create the contact in Swell by phone
   const cleanPhone = phone.replace(/[^0-9]/g, '').replace(/^1/, ''); // strip +1 and non-digits
+
+  // NOTE: no cross-channel 48h brand-fatigue guard here (was added 2026-04-18, removed same day).
+  // Review invites are POST-VISIT by definition — runDailyReviewRequests only fires for orders
+  // in the last 24h. Both intended flows are healthy:
+  //   Welcome SMS → visit → review invite (welcome-redemption flow)
+  //   Win-back SMS → visit → review invite (win-back redemption flow, e.g. Kurt Apr 17)
+  // The 30-day review cooldown in runDailyReviewRequests prevents review-spam. The 48h guard
+  // on sendSwellSMS (retail marketing → marketing) still prevents back-to-back offers.
   const searchResp = await fetch(
     `https://platform.swellcx.com/api/v1/contacts?token=${token}&phone=${cleanPhone}`,
     { headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }
@@ -1025,14 +1035,28 @@ async function sendReviewSMS(phone, customerName, orderId, env) {
     throw new Error(`Swell invite API error (${inviteResp.status}): ${err}`);
   }
 
-  // Mark order as review requested (skip if no orderId — guestbook-only sends)
-  if (orderId) {
+  // Stamp review_requested_at on ALL orders for this phone in the last 24h that aren't
+  // already stamped. Previously only the one orderId passed in got stamped — but
+  // runDailyReviewRequests dedups by phone before calling, so multi-order visits (e.g.
+  // Kurt Schaefer's 2 Square orders 7 minutes apart on Apr 17) left the second order as
+  // review_requested_at=NULL. Also covers the guestbook-only path (orderId=null).
+  //
+  // Match against three phone formats to handle Toast/Square/raw variants in historical
+  // data: the normalized 10-digit phone, the raw input, and the original orderId.
+  try {
     await env.DB.prepare(`
       UPDATE orders
       SET review_requested_at = datetime('now'),
           review_request_method = 'sms'
-      WHERE id = ?
-    `).bind(orderId).run();
+      WHERE (id = ?
+             OR customer_phone = ?
+             OR customer_phone = ?
+             OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(customer_phone,''), '+1', ''), '-', ''), ' ', ''), '(', ''), ')', '') = ?)
+        AND review_requested_at IS NULL
+        AND order_date >= datetime('now', '-24 hours')
+    `).bind(orderId || '', phone, cleanPhone, cleanPhone).run();
+  } catch (err) {
+    console.error(`[sendReviewSMS] review_requested_at stamp failed for ${cleanPhone.slice(0, 6)}***:`, err.message);
   }
 
   console.log(`[Account] Swell review invite sent to ${phone.slice(0, 6)}*** (contact ${contactId})`);
@@ -1062,16 +1086,20 @@ async function enrichAndSendReviews(env, opts = {}) {
 
   const eligible = [];
 
-  // PRIMARY: D1 orders with phones in the lookback window
+  // PRIMARY: D1 orders with phones in the lookback window.
+  // POS switched to Square on April 14 — Toast orders are historical-only now.
+  // Excludes Toast, wholesale/catering sources, and delivery-platform orders (phones
+  // there are DoorDash/Uber/Grubhub driver relays, not our customers).
   const recentWithPhone = await env.DB.prepare(`
     SELECT customer_phone, customer_name FROM orders
     WHERE customer_phone IS NOT NULL AND customer_phone != ''
       AND order_date >= datetime('now', '-${windowHours} hours')
-      AND (source IS NULL OR source NOT IN ('qbo_wholesale', 'qbo_invoice', 'toast_catering'))
+      AND source = 'square'
       AND (customer_name IS NULL
         OR (customer_name NOT LIKE 'DD %'
         AND customer_name NOT LIKE 'UBER%'
-        AND customer_name NOT LIKE '%Grubhub%'))
+        AND customer_name NOT LIKE '%Grubhub%'
+        AND customer_name NOT LIKE '%DoorDash%'))
     GROUP BY customer_phone
   `).all();
 
@@ -1087,11 +1115,18 @@ async function enrichAndSendReviews(env, opts = {}) {
     const n = normalizePhone(e.phone);
     return n ? n.replace(/\D/g, '') : e.phone.replace(/\D/g, '');
   }));
+  // Guestbook sync lags up to 24h — use 7 days for the supplementary source so we catch
+  // customers who signed up earlier in the week and haven't been reviewed yet. 30-day
+  // cooldown downstream still prevents re-sends.
+  // Also filter out phone-as-name records (fake/junk first_name = their own phone).
   const guestbookRecent = await env.DB.prepare(`
     SELECT phone, first_name, last_name FROM guestbook
     WHERE phone IS NOT NULL AND phone != ''
       AND last_visit IS NOT NULL
-      AND last_visit >= datetime('now', '-${windowHours} hours')
+      AND last_visit >= datetime('now', '-7 days')
+      AND first_name NOT GLOB '+*'
+      AND first_name NOT GLOB '1[0-9]*'
+      AND LOWER(first_name) NOT IN ('visa cardholder','mastercard','cardholder','card holder','test','guest','customer','unknown','n/a','none','online order')
   `).all();
   let guestbookHits = 0;
   for (const row of (guestbookRecent.results || [])) {
@@ -1150,6 +1185,15 @@ async function enrichAndSendReviews(env, opts = {}) {
       await env.KV.put(`review_cooldown:${digits}`, new Date().toISOString(), {
         expirationTtl: REVIEW_COOLDOWN_DAYS * 86400,
       });
+      // Stamp review_requested_at on every order matching this phone in the lookback window.
+      // Without this, dashboard/reports that count reviews via orders.review_requested_at
+      // show 0 sent even when the cron is firing reviews successfully.
+      await env.DB.prepare(`
+        UPDATE orders SET review_requested_at = datetime('now'), review_request_method = 'sms'
+        WHERE customer_phone IN (?, ?)
+          AND review_requested_at IS NULL
+          AND order_date >= datetime('now', '-${windowHours} hours')
+      `).bind(phone, rawPhone).run().catch(e => console.error('[Account] review_requested_at stamp failed:', e.message));
       sent++;
       console.log(`[Account] Review invite sent to ${name} (${phone.slice(0, 6)}***)`);
     } catch (err) {
@@ -1328,22 +1372,16 @@ Return JSON: {subject, body}`;
   }
 
   if (!text) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        messages: [{ role: 'user', content: prompt }],
-      }),
+    // DIF-3 (May 13 2026): wired through ai-budget
+    const result = await callAI(env, {
+      use_case: 'account_checkin_email',
+      model: 'haiku',
+      caller: 'account-worker.js',
+      max_tokens: 300,
+      messages: [{ role: 'user', content: prompt }],
     });
-    if (!response.ok) return;
-    const data = await response.json();
-    text = data.content?.[0]?.text || '';
+    if (!result.ok) return;
+    text = result.content || '';
   }
 
   try {
@@ -1415,6 +1453,15 @@ async function buildDigest(env) {
     ).all(),
   ]);
 
+  // Pull canonical financial numbers — these override any stale values in
+  // the cfo_directive. The Mercury feed disconnected from QBO ~60 days ago,
+  // so QBO-derived cash is wrong; canonical reads live from mercury_accounts.
+  const [canonCash, canonRunway, canonRevenue] = await Promise.all([
+    getCanonicalCashOnHand(env).catch(() => null),
+    getCanonicalRunway(env).catch(() => null),
+    getCanonicalWeeklyRevenue(env, 7).catch(() => null),
+  ]);
+
   return {
     week_of: new Date().toISOString().split('T')[0],
     accounts: accountStats,
@@ -1423,6 +1470,11 @@ async function buildDigest(env) {
     top_accounts: topAccounts.results,
     cfo_data: cfoDirective || null,
     open_flags: openFlags.results || [],
+    canonical: {
+      cash_on_hand: canonCash,
+      runway: canonRunway,
+      weekly_revenue: canonRevenue,
+    },
   };
 }
 
@@ -1430,31 +1482,73 @@ async function sendDigest(env, accounts, issues) {
   const data = await buildDigest(env);
   const cfoData = data.cfo_data;
   const openFlags = data.open_flags;
+  const canon = data.canonical || {};
 
-  // Build cash runway signal
-  let cashSignal = '';
-  if (cfoData?.cash_runway_weeks) {
-    const weeks = cfoData.cash_runway_weeks;
-    cashSignal = weeks > 12 ? 'green (>12 weeks)' : weeks >= 8 ? 'amber (8-12 weeks)' : 'RED (<8 weeks)';
+  // ─── CANONICAL NUMBERS (override any stale directive values) ──────────
+  const canonCash = canon.cash_on_hand?.total ?? null;
+  const canonRunwayWeeks = canon.runway?.weeks ?? null;
+  const canonRunwayDisplay = canon.runway?.display ?? null;
+  const canonRev = canon.weekly_revenue || {};
+  const canonRetail = canonRev.retail?.revenue ?? 0;
+  const canonRetailBreakdown = canonRev.retail?.breakdown || {};
+  const canonMarketplace = canonRev.marketplace?.revenue ?? 0;
+  const canonMarketplacePlatforms = canonRev.marketplace?.platforms || [];
+  const canonWholesale = canonRev.wholesale?.revenue ?? 0;
+  const canonCatering = canonRev.catering?.revenue ?? 0;
+  const canonTotalRev = canonRev.total ?? 0;
+  const canonWarnings = canonRev.warnings || [];
+
+  // Drift detection vs stored directive removed (Reset plan Phase 2, Apr 30 2026):
+  // cfo-agent no longer writes cash_on_hand to financial_directives. Runway
+  // drift is still informational; check it but only the runway, not cash.
+  const driftNotes = [];
+  if (cfoData) {
+    if (canonRunwayWeeks != null && cfoData.cash_runway_weeks) {
+      const diff = Math.abs((cfoData.cash_runway_weeks || 0) - canonRunwayWeeks);
+      if (diff > 4) driftNotes.push(`Stored runway ${cfoData.cash_runway_weeks}w differs from canonical ${canonRunwayWeeks}w — using canonical.`);
+    }
   }
 
-  const cfoSection = cfoData
-    ? `CFO EXECUTIVE SUMMARY (from Sunday analysis):
+  // Cash signal off canonical runway, not directive
+  let cashSignal = '';
+  if (canonRunwayWeeks != null) {
+    cashSignal = canonRunwayWeeks > 12 ? 'green (>12 weeks)' : canonRunwayWeeks >= 8 ? 'amber (8-12 weeks)' : canonRunwayWeeks >= 4 ? 'RED (<8 weeks)' : 'CRITICAL (<4 weeks)';
+  }
+
+  const warningsBlock = canonWarnings.length
+    ? '\n⚠ DATA WARNINGS (look into these — may indicate broken data flow):\n' + canonWarnings.map(w => `  · [${w.severity.toUpperCase()}] ${w.message}`).join('\n')
+    : '';
+  const driftBlock = driftNotes.length
+    ? '\n📊 STALE-DATA NOTES:\n' + driftNotes.map(n => '  · ' + n).join('\n')
+    : '';
+
+  // Format retail breakdown with sub-channels
+  const retailIn = canonRetailBreakdown.in_person_square || {};
+  const retailDel = canonRetailBreakdown.direct_delivery || {};
+  const retailSubLine = `(In-person Square $${(retailIn.revenue || 0).toFixed(0)} · Direct delivery Kiosk/Web $${(retailDel.revenue || 0).toFixed(0)})`;
+
+  // Marketplace platforms one-liner
+  const marketplaceLine = canonMarketplace > 0
+    ? `\n- Marketplace (gross via Square; not in total — would double-count Mercury settlement): $${canonMarketplace.toFixed(0)} (${canonMarketplacePlatforms.map(p => p.platform + ' $' + p.revenue.toFixed(0)).join(' · ')})`
+    : '';
+
+  const cfoSection = `CASH POSITION (live, from Mercury — overrides any stale Sunday directive):
+- Cash on hand: ${canonCash != null ? '$' + canonCash.toLocaleString('en-US', {minimumFractionDigits: 2}) : 'unknown'} ${canon.cash_on_hand?.breakdown ? '(' + canon.cash_on_hand.breakdown.map(b => b.account_name + ': $' + b.balance.toFixed(0)).join(', ') + ')' : ''}
+- Runway: ${canonRunwayDisplay || 'unknown'}${cashSignal ? ' — ' + cashSignal : ''}
+- Weekly burn (30d avg): ${canon.runway?.weekly_burn ? '$' + canon.runway.weekly_burn.toLocaleString('en-US', {maximumFractionDigits: 0}) : 'unknown'} (source: ${canon.runway?.burn_source || '?'})
+
+REVENUE LAST 7 DAYS (live, from orders + catering tables):
+- Wholesale: $${canonWholesale.toFixed(0)} (${canonRev.wholesale?.orders || 0} orders / invoices)
+- Retail: $${canonRetail.toFixed(0)} (${canonRev.retail?.orders || 0} orders) ${retailSubLine}
+- Catering: $${canonCatering.toFixed(0)} (${canonRev.catering?.bookings || 0} bookings)
+- Total: $${canonTotalRev.toFixed(0)}${marketplaceLine}
+- GL cross-check: $${(canonRev.gl_revenue_cross_check || 0).toFixed(0)}${warningsBlock}${driftBlock}
+
+${cfoData ? `CFO EXECUTIVE SUMMARY (from Sunday analysis — narrative only, NOT a source of truth for numbers):
 ${cfoData.executive_summary || 'No summary available.'}
 
-Channel Revenue (this week):
-- Wholesale: $${(cfoData.wholesale_revenue_week || 0).toFixed(0)}
-- Retail: $${(cfoData.retail_revenue_week || 0).toFixed(0)}
-- Catering: $${(cfoData.catering_revenue_week || 0).toFixed(0)}
-- Total: $${(cfoData.total_revenue_week || 0).toFixed(0)}
-
-Cash Runway: ${cfoData.cash_runway_weeks ? cfoData.cash_runway_weeks + ' weeks' : 'See QBO'} — ${cashSignal}
-${cfoData.cash_alert ? '⚠ CASH ALERT ACTIVE — growth brake may be engaged' : ''}
-${cfoData.growth_brake ? '⚠ GROWTH BRAKE ACTIVE — outreach volume reduced' : ''}
-
 CFO Priority Actions:
-${(() => { try { return JSON.parse(cfoData.priority_actions || '[]').map((a, i) => `${i+1}. ${a.action || a}`).join('\n'); } catch { return cfoData.priority_actions || 'None'; } })()}`
-    : 'CFO analysis runs Sunday 10pm — check back next week.';
+${(() => { try { return JSON.parse(cfoData.priority_actions || '[]').map((a, i) => `${i+1}. ${a.action || a}`).join('\n'); } catch { return cfoData.priority_actions || 'None'; } })()}` : 'CFO analysis runs Sunday 10pm — narrative will resume next week.'}`;
 
   const flagSection = openFlags.length > 0
     ? `OPEN FINANCIAL FLAGS:
@@ -1462,6 +1556,12 @@ ${openFlags.map(f => `[${f.severity.toUpperCase()}] ${f.title}\n   → ${f.sugge
     : '';
 
   const prompt = `Write Drew's Monday morning Dangerous Pretzel business digest email.
+
+CRITICAL DATA RULES (NEVER VIOLATE):
+- The "CASH POSITION" and "REVENUE LAST 7 DAYS" numbers below are LIVE — use these EXACTLY as shown. Do not round to "close" numbers, do not approximate.
+- The CFO executive summary is NARRATIVE only — never quote dollar figures from it. If it conflicts with the live numbers, the live numbers win.
+- If "DATA WARNINGS" appear, surface them prominently in the body — they indicate real operational issues Drew needs to act on.
+- If "STALE-DATA NOTES" appear, briefly mention that the prior week's directive had stale numbers (helps Drew understand why this week's numbers may differ from his last digest).
 
 CFO SECTION (PUT THIS FIRST — most important):
 ${cfoSection}
@@ -1475,33 +1575,28 @@ At-risk accounts needing attention: ${issues.length}
 ${issues.map(i => `- ${i.account.venue_name}: ${i.daysSinceOrder} days since last order (${i.severity})`).join('\n')}
 
 Format:
-- FIRST section: CFO executive summary + cash runway + channel performance
-- SECOND section: Priority actions from CFO directive
-- THIRD section: Ops — account health, pipeline, agent activity
-- FOURTH section: Open financial flags if any
+- FIRST section: cash position + runway + channel revenue (USE THE EXACT NUMBERS ABOVE)
+- SECOND section: CFO narrative summary + priority actions (text only, no $ figures from the directive)
+- THIRD section: Data warnings (if any) — call out what's broken
+- FOURTH section: Ops — account health, pipeline, agent activity
+- FIFTH section: Open financial flags if any
 - Flag any at-risk accounts by name with suggested action
 - Close with something energizing — this is a momentum builder, not a report
 - Tone: like a smart business partner talking to Drew, not a dashboard
 
-Keep it under 400 words. Return JSON: {subject, body}`;
+Keep it under 500 words. Return JSON: {subject, body}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+  // DIF-3 (May 13 2026): wired through ai-budget
+  const result = await callAI(env, {
+    use_case: 'account_churn_risk',
+    model: 'sonnet',
+    caller: 'account-worker.js',
+    max_tokens: 1000,
+    messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.ok) return;
-  const respData = await response.json();
-  const text = respData.content?.[0]?.text || '';
+  if (!result.ok) return;
+  const text = result.content || '';
 
   try {
     const clean = text.replace(/```json\n?|\n?```/g, '').trim();
@@ -2737,10 +2832,12 @@ async function sendGmailFromDrew(env, { to, subject, body }) {
     }),
   });
   const { access_token } = await tokenResp.json();
+  // RFC 2047 encode subject when it contains non-ASCII
+  const encSubj = /^[\x00-\x7F]*$/.test(subject) ? subject : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(subject)))}?=`;
   const message = [
     `To: ${to}`,
     `From: Drew @ Dangerous Pretzel <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`,
+    `Subject: ${encSubj}`,
     'Content-Type: text/plain; charset=utf-8',
     '',
     body,
@@ -2812,10 +2909,12 @@ async function sendGmail(env, { to, subject, body, threadId }) {
   });
   const { access_token } = await tokenResp.json();
 
+  // RFC 2047 encode subject when it contains non-ASCII
+  const encSubj2 = /^[\x00-\x7F]*$/.test(subject) ? subject : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(subject)))}?=`;
   const message = [
     `To: ${to}`,
     `From: Drew <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`,
+    `Subject: ${encSubj2}`,
     'Content-Type: text/plain; charset=utf-8',
     '',
     body,
@@ -2895,27 +2994,21 @@ VOICE RULES (non-negotiable):
 Return JSON: {"subject": "...", "body": "...", "self_score": 8, "reasoning": "..."}`;
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 600,
-          messages: [{ role: 'user', content: prompt }],
-        }),
+      // DIF-3 (May 13 2026): wired through ai-budget
+      const result = await callAI(env, {
+        use_case: 'monday_digest_curation',
+        model: 'sonnet',
+        caller: 'account-worker.js',
+        max_tokens: 600,
+        messages: [{ role: 'user', content: prompt }],
       });
 
-      if (!response.ok) {
-        console.error(`[CoachVoice] Claude error for log ${email.id}: ${response.status}`);
+      if (!result.ok) {
+        console.error(`[CoachVoice] Claude error for log ${email.id}: ${result.blocked_reason || result.error}`);
         continue;
       }
 
-      const respData = await response.json();
-      const text = respData.content?.[0]?.text || '';
+      const text = result.content || '';
       const clean = text.replace(/```json\n?|\n?```/g, '').trim();
       const redraft = JSON.parse(clean);
 

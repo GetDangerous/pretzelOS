@@ -9,7 +9,7 @@
 CREATE TABLE IF NOT EXISTS venues (
   id              TEXT PRIMARY KEY,          -- apollo_id or generated uuid
   name            TEXT NOT NULL,
-  category        TEXT NOT NULL,             -- brewery | ski_resort | event_venue | theater | hotel_bar | golf | stadium | retail | other
+  category        TEXT NOT NULL,             -- brewery | ski_resort | stadium | theater | golf | bowling | summer_venue | event_venue | other
   tier            INTEGER,                   -- 1=hot 2=warm 3=cold (set by qualifier)
   status          TEXT NOT NULL DEFAULT 'prospect',
   -- prospect → contacted → replied → meeting → active → churned
@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS venues (
   qual_score      INTEGER,                   -- 0–100
   qual_summary    TEXT,                      -- Claude's one-paragraph rationale
   icp_fit         TEXT,                      -- captive_audience | high_dwell | alcohol_focused | family | other
+
+  -- Apollo enrichment data (captured at scout time for qualifier and feedback)
+  apollo_industry   TEXT,                    -- Apollo's industry classification
+  apollo_description TEXT,                   -- Apollo's short_description or seo_description
+  apollo_employees  INTEGER,                 -- estimated_num_employees
+  apollo_revenue    TEXT,                    -- annual_revenue_printed
 
   -- Intelligence
   website         TEXT,
@@ -443,3 +449,50 @@ Tone: Confident, specific, has the brand edge. Not corporate food-speak.
 
 Return JSON: {pitch_30sec, numbers, best_accounts, objections, how_to_place, contact_info}',
 'You are generating a sales enablement tool for distribution reps at {{distributor_name}}. They know food service but do not know Dangerous Pretzel. Make it easy for them to sell without Drew in the room.');
+
+-- ------------------------------------------------------------
+-- VENUE STATUS HISTORY — tracks every status transition for metrics
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS venue_status_history (
+  id          TEXT PRIMARY KEY,
+  venue_id    TEXT NOT NULL,
+  old_status  TEXT,
+  new_status  TEXT NOT NULL,
+  changed_by  TEXT DEFAULT 'drew',              -- drew | outreach_agent | qualifier | scout
+  notes       TEXT,
+  created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_status_history_venue ON venue_status_history(venue_id);
+CREATE INDEX IF NOT EXISTS idx_status_history_time ON venue_status_history(created_at);
+
+-- ------------------------------------------------------------
+-- PIPELINE FEEDBACK — Drew's archive/convert reasons for learning
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pipeline_feedback (
+  id                TEXT PRIMARY KEY,
+  venue_id          TEXT NOT NULL,
+  venue_name        TEXT,
+  category          TEXT,
+  action            TEXT NOT NULL,              -- archived | converted | rejected | flagged_junk
+  reason            TEXT,                       -- Drew's reason or auto-generated
+  apollo_industry   TEXT,                       -- snapshot for pattern detection
+  apollo_description TEXT,
+  created_at        TEXT DEFAULT (datetime('now'))
+);
+
+-- ------------------------------------------------------------
+-- SCOUT REJECTIONS — log of venues rejected at any stage
+-- Builds training dataset for scout + qualifier improvement
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS scout_rejections (
+  id                TEXT PRIMARY KEY,
+  apollo_id         TEXT,
+  name              TEXT,
+  city              TEXT,
+  category          TEXT,
+  industry          TEXT,
+  description       TEXT,
+  rejection_source  TEXT,                       -- hard_filter | ai_gate | qualifier | drew
+  rejection_reason  TEXT,
+  created_at        TEXT DEFAULT (datetime('now'))
+);

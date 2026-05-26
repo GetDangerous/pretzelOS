@@ -1,0 +1,753 @@
+[
+  {
+    "results": [
+      {
+        "id": "f229125c-a7c3-4a79-b35c-cbf8554de54b",
+        "entry_date": "2025-02-28",
+        "description": "Sweep Toast POS 2025-02 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 31582.73,
+        "total_credit": 31582.73,
+        "status": "posted"
+      },
+      {
+        "id": "126f057c-7dae-4961-9bf9-8dc909abf475",
+        "entry_date": "2025-02-28",
+        "description": "Sweep DoorDash 2025-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 1836.87,
+        "total_credit": 1836.87,
+        "status": "posted"
+      },
+      {
+        "id": "bb99cd11-9210-4a68-ae52-60dc3ada52eb",
+        "entry_date": "2025-02-28",
+        "description": "Sweep UberEats 2025-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 336.64,
+        "total_credit": 336.64,
+        "status": "posted"
+      },
+      {
+        "id": "2ac2ccb1-449d-4232-8b60-2bbe97be40a7",
+        "entry_date": "2025-02-28",
+        "description": "Sweep Grubhub 2025-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 168.91,
+        "total_credit": 168.91,
+        "status": "posted"
+      },
+      {
+        "id": "dc4f9b4b-8f14-4921-a2e5-6665f12bb574",
+        "entry_date": "2025-03-31",
+        "description": "Sweep Toast POS 2025-03 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 47200.24,
+        "total_credit": 47200.24,
+        "status": "posted"
+      },
+      {
+        "id": "5d1f0b7a-d938-460f-95e9-97aa49cf4c64",
+        "entry_date": "2025-03-31",
+        "description": "Sweep DoorDash 2025-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3689.07,
+        "total_credit": 3689.07,
+        "status": "posted"
+      },
+      {
+        "id": "7bd8d779-838c-4d38-acd5-7d50e33c311f",
+        "entry_date": "2025-03-31",
+        "description": "Sweep UberEats 2025-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 668.57,
+        "total_credit": 668.57,
+        "status": "posted"
+      },
+      {
+        "id": "e5091501-ad69-4cce-887c-fdf7e42fce27",
+        "entry_date": "2025-03-31",
+        "description": "Sweep Grubhub 2025-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 347.71,
+        "total_credit": 347.71,
+        "status": "posted"
+      },
+      {
+        "id": "98ba3135-6173-441d-8455-9c4c724020a0",
+        "entry_date": "2025-04-30",
+        "description": "Sweep Toast POS 2025-04 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 44407.39,
+        "total_credit": 44407.39,
+        "status": "posted"
+      },
+      {
+        "id": "cb195b94-fc25-411b-8c38-de1cc3f5ba7f",
+        "entry_date": "2025-04-30",
+        "description": "Sweep DoorDash 2025-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3144.25,
+        "total_credit": 3144.25,
+        "status": "posted"
+      },
+      {
+        "id": "dcebf21d-b030-47d0-a6b0-18916c8da52c",
+        "entry_date": "2025-04-30",
+        "description": "Sweep UberEats 2025-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 743.54,
+        "total_credit": 743.54,
+        "status": "posted"
+      },
+      {
+        "id": "d199e158-ac21-4600-bd49-3cd41b45081c",
+        "entry_date": "2025-04-30",
+        "description": "Sweep Grubhub 2025-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 263.15,
+        "total_credit": 263.15,
+        "status": "posted"
+      },
+      {
+        "id": "d45c8986-0d35-40e3-8250-1e4942d121f3",
+        "entry_date": "2025-05-31",
+        "description": "Sweep Toast POS 2025-05 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 43714.1,
+        "total_credit": 43714.1,
+        "status": "posted"
+      },
+      {
+        "id": "14ef5c13-aea9-4910-8b2e-cb39536e5364",
+        "entry_date": "2025-05-31",
+        "description": "Sweep DoorDash 2025-05 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 4874.38,
+        "total_credit": 4874.38,
+        "status": "posted"
+      },
+      {
+        "id": "ed39d5f3-566a-4ed9-93a0-182f1cddebc4",
+        "entry_date": "2025-05-31",
+        "description": "Sweep UberEats 2025-05 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 794.96,
+        "total_credit": 794.96,
+        "status": "posted"
+      },
+      {
+        "id": "e111c73c-a2c0-40cb-a3ee-9fe5f4f45bb4",
+        "entry_date": "2025-05-31",
+        "description": "Sweep Grubhub 2025-05 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 442.34,
+        "total_credit": 442.34,
+        "status": "posted"
+      },
+      {
+        "id": "acd9be21-20fe-44fc-9dac-bb70ce9dd35a",
+        "entry_date": "2025-06-30",
+        "description": "Sweep Toast POS 2025-06 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 34343.86,
+        "total_credit": 34343.86,
+        "status": "posted"
+      },
+      {
+        "id": "6552ca37-37d1-48a7-bbce-67fc365187ec",
+        "entry_date": "2025-06-30",
+        "description": "Sweep DoorDash 2025-06 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 4848.34,
+        "total_credit": 4848.34,
+        "status": "posted"
+      },
+      {
+        "id": "f998d0bf-01d0-4c99-a8e0-5d3689371659",
+        "entry_date": "2025-06-30",
+        "description": "Sweep UberEats 2025-06 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 636.83,
+        "total_credit": 636.83,
+        "status": "posted"
+      },
+      {
+        "id": "055fcf2d-de0c-4742-991b-393e21c41453",
+        "entry_date": "2025-06-30",
+        "description": "Sweep Grubhub 2025-06 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 256.45,
+        "total_credit": 256.45,
+        "status": "posted"
+      },
+      {
+        "id": "03d3b230-724e-4012-98b8-d6576c50b7fc",
+        "entry_date": "2025-07-31",
+        "description": "Sweep Toast POS 2025-07 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 31044.88,
+        "total_credit": 31044.88,
+        "status": "posted"
+      },
+      {
+        "id": "7d180f2b-0362-4a46-8535-bfd971913f04",
+        "entry_date": "2025-07-31",
+        "description": "Sweep Square POS 2025-07 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 90.76,
+        "total_credit": 90.76,
+        "status": "posted"
+      },
+      {
+        "id": "d1681913-7266-4e79-9336-31545264ea9e",
+        "entry_date": "2025-07-31",
+        "description": "Sweep DoorDash 2025-07 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 4087.14,
+        "total_credit": 4087.14,
+        "status": "posted"
+      },
+      {
+        "id": "313145e8-1eeb-4171-9308-e194841ac923",
+        "entry_date": "2025-07-31",
+        "description": "Sweep UberEats 2025-07 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 1026.46,
+        "total_credit": 1026.46,
+        "status": "posted"
+      },
+      {
+        "id": "33c7c735-ef64-47d5-889b-1c97e22de26c",
+        "entry_date": "2025-07-31",
+        "description": "Sweep Grubhub 2025-07 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 279.61,
+        "total_credit": 279.61,
+        "status": "posted"
+      },
+      {
+        "id": "18293856-4c9b-42ea-a6a6-6a9ff2d64977",
+        "entry_date": "2025-08-31",
+        "description": "Sweep Toast POS 2025-08 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 23982.82,
+        "total_credit": 23982.82,
+        "status": "posted"
+      },
+      {
+        "id": "54851096-af78-4bdf-88a1-0101992bdc4d",
+        "entry_date": "2025-08-31",
+        "description": "Sweep Square POS 2025-08 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 3895.18,
+        "total_credit": 3895.18,
+        "status": "posted"
+      },
+      {
+        "id": "0bbb594a-0c55-4b08-884d-acd0f90fe072",
+        "entry_date": "2025-08-31",
+        "description": "Sweep DoorDash 2025-08 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 4149.92,
+        "total_credit": 4149.92,
+        "status": "posted"
+      },
+      {
+        "id": "64b7cb35-793b-470e-b9da-b601c04e3560",
+        "entry_date": "2025-08-31",
+        "description": "Sweep UberEats 2025-08 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 583.94,
+        "total_credit": 583.94,
+        "status": "posted"
+      },
+      {
+        "id": "91dd9233-9148-410a-8ecc-fa7a1c4dc10d",
+        "entry_date": "2025-08-31",
+        "description": "Sweep Grubhub 2025-08 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 297.6,
+        "total_credit": 297.6,
+        "status": "posted"
+      },
+      {
+        "id": "6d71950e-888d-46ea-9c44-f6413430d7fd",
+        "entry_date": "2025-09-30",
+        "description": "Sweep Toast POS 2025-09 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 34716.9,
+        "total_credit": 34716.9,
+        "status": "posted"
+      },
+      {
+        "id": "ee27e856-40e1-4cc3-a7c5-6ad7f22ffdf1",
+        "entry_date": "2025-09-30",
+        "description": "Sweep Square POS 2025-09 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 1796.34,
+        "total_credit": 1796.34,
+        "status": "posted"
+      },
+      {
+        "id": "e343f171-5a7b-4a4f-9994-3401b025fabd",
+        "entry_date": "2025-09-30",
+        "description": "Sweep DoorDash 2025-09 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3313.85,
+        "total_credit": 3313.85,
+        "status": "posted"
+      },
+      {
+        "id": "a6867d56-4097-48e7-bf83-a4df396ace1b",
+        "entry_date": "2025-09-30",
+        "description": "Sweep UberEats 2025-09 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 606.26,
+        "total_credit": 606.26,
+        "status": "posted"
+      },
+      {
+        "id": "6b8d7087-32a9-4dbf-abb3-7c2de49be4a3",
+        "entry_date": "2025-09-30",
+        "description": "Sweep Grubhub 2025-09 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 188.82,
+        "total_credit": 188.82,
+        "status": "posted"
+      },
+      {
+        "id": "d6a1ce31-4d27-4fb7-9480-a2d25f1de86a",
+        "entry_date": "2025-10-31",
+        "description": "Sweep Toast POS 2025-10 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 28434.1,
+        "total_credit": 28434.1,
+        "status": "posted"
+      },
+      {
+        "id": "f2351f87-1a68-4c07-976c-f3d4e1a5afd2",
+        "entry_date": "2025-10-31",
+        "description": "Sweep Square POS 2025-10 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 786.54,
+        "total_credit": 786.54,
+        "status": "posted"
+      },
+      {
+        "id": "ba1b43b0-6441-490c-baca-736c08242dc5",
+        "entry_date": "2025-10-31",
+        "description": "Sweep DoorDash 2025-10 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 4124.53,
+        "total_credit": 4124.53,
+        "status": "posted"
+      },
+      {
+        "id": "1f3c6099-fee0-4e67-9b51-d30716300867",
+        "entry_date": "2025-10-31",
+        "description": "Sweep UberEats 2025-10 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 593.26,
+        "total_credit": 593.26,
+        "status": "posted"
+      },
+      {
+        "id": "72b211e1-f05b-4650-a36f-71edc782489e",
+        "entry_date": "2025-10-31",
+        "description": "Sweep Grubhub 2025-10 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 205.55,
+        "total_credit": 205.55,
+        "status": "posted"
+      },
+      {
+        "id": "fb9438a3-9958-4b24-9eb9-d84ebb67c8a5",
+        "entry_date": "2025-11-30",
+        "description": "Sweep Toast POS 2025-11 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 22738.88,
+        "total_credit": 22738.88,
+        "status": "posted"
+      },
+      {
+        "id": "598e0851-7d4e-483b-a513-e6660e07ce5f",
+        "entry_date": "2025-11-30",
+        "description": "Sweep DoorDash 2025-11 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3787.77,
+        "total_credit": 3787.77,
+        "status": "posted"
+      },
+      {
+        "id": "d53ae7d2-e8fa-47e3-bdcd-4d124bd300ff",
+        "entry_date": "2025-11-30",
+        "description": "Sweep UberEats 2025-11 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 648.69,
+        "total_credit": 648.69,
+        "status": "posted"
+      },
+      {
+        "id": "ff05c63d-40e0-4ddc-9eb7-06adb69dd2af",
+        "entry_date": "2025-11-30",
+        "description": "Sweep Grubhub 2025-11 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 128.05,
+        "total_credit": 128.05,
+        "status": "posted"
+      },
+      {
+        "id": "698d231a-557b-4c89-ac5a-b2583f3051d7",
+        "entry_date": "2025-12-31",
+        "description": "Sweep Toast POS 2025-12 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 21552.06,
+        "total_credit": 21552.06,
+        "status": "posted"
+      },
+      {
+        "id": "80c72cd0-8353-4abf-a802-1713c9fdac72",
+        "entry_date": "2025-12-31",
+        "description": "Sweep Square POS 2025-12 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 26263.23,
+        "total_credit": 26263.23,
+        "status": "posted"
+      },
+      {
+        "id": "17ffe153-89e0-4f4e-a6d3-515f0266639f",
+        "entry_date": "2025-12-31",
+        "description": "Sweep DoorDash 2025-12 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 2591.13,
+        "total_credit": 2591.13,
+        "status": "posted"
+      },
+      {
+        "id": "8379d4c7-d9cf-4f16-b05e-4f56b3818e37",
+        "entry_date": "2025-12-31",
+        "description": "Sweep UberEats 2025-12 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 667.21,
+        "total_credit": 667.21,
+        "status": "posted"
+      },
+      {
+        "id": "7cae2029-1655-49ec-84fb-4657f839cc42",
+        "entry_date": "2025-12-31",
+        "description": "Sweep Grubhub 2025-12 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 176.91,
+        "total_credit": 176.91,
+        "status": "posted"
+      },
+      {
+        "id": "26d44d7a-4d5e-4d33-827a-7cb46fa3da91",
+        "entry_date": "2026-01-31",
+        "description": "Sweep Toast POS 2026-01 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 19258.84,
+        "total_credit": 19258.84,
+        "status": "posted"
+      },
+      {
+        "id": "42e21b9e-69ec-4b36-9b71-2286fa60cd71",
+        "entry_date": "2026-01-31",
+        "description": "Sweep DoorDash 2026-01 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3527.24,
+        "total_credit": 3527.24,
+        "status": "posted"
+      },
+      {
+        "id": "59bacbf5-3ed2-4d0b-80a2-6c8ba60e710f",
+        "entry_date": "2026-01-31",
+        "description": "Sweep UberEats 2026-01 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 712.74,
+        "total_credit": 712.74,
+        "status": "posted"
+      },
+      {
+        "id": "dc6bece5-4dd5-4461-ae14-eea0ed91abdd",
+        "entry_date": "2026-01-31",
+        "description": "Sweep Grubhub 2026-01 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 71.1,
+        "total_credit": 71.1,
+        "status": "posted"
+      },
+      {
+        "id": "0b433602-975b-4a70-9f17-f9a6c9f65f35",
+        "entry_date": "2026-02-28",
+        "description": "Sweep Toast POS 2026-02 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 28703.76,
+        "total_credit": 28703.76,
+        "status": "posted"
+      },
+      {
+        "id": "d7b30035-e7d7-4578-ae45-afd9207bcf96",
+        "entry_date": "2026-02-28",
+        "description": "Sweep DoorDash 2026-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3137.75,
+        "total_credit": 3137.75,
+        "status": "posted"
+      },
+      {
+        "id": "9de17fde-824e-4765-86e1-46efc51bbd80",
+        "entry_date": "2026-02-28",
+        "description": "Sweep UberEats 2026-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 356.34,
+        "total_credit": 356.34,
+        "status": "posted"
+      },
+      {
+        "id": "58f86b7f-39c1-4145-8a54-1581d4a5686f",
+        "entry_date": "2026-02-28",
+        "description": "Sweep Grubhub 2026-02 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 130.85,
+        "total_credit": 130.85,
+        "status": "posted"
+      },
+      {
+        "id": "72530160-943a-4ebd-809e-056fe9483451",
+        "entry_date": "2026-03-31",
+        "description": "Sweep Toast POS 2026-03 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 26657.09,
+        "total_credit": 26657.09,
+        "status": "posted"
+      },
+      {
+        "id": "dd87f7e2-4e9c-4adc-ba44-8544e04ad035",
+        "entry_date": "2026-03-31",
+        "description": "Sweep Square POS 2026-03 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 107.85,
+        "total_credit": 107.85,
+        "status": "posted"
+      },
+      {
+        "id": "766f56dd-72fc-4f60-b5f8-08a8c2ba694d",
+        "entry_date": "2026-03-31",
+        "description": "Sweep DoorDash 2026-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 3369.57,
+        "total_credit": 3369.57,
+        "status": "posted"
+      },
+      {
+        "id": "b9445f3c-da33-4341-a6ae-bf37a9dc18e5",
+        "entry_date": "2026-03-31",
+        "description": "Sweep UberEats 2026-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 324.55,
+        "total_credit": 324.55,
+        "status": "posted"
+      },
+      {
+        "id": "1ca87679-bcd9-44ce-b81b-f72061db4b50",
+        "entry_date": "2026-03-31",
+        "description": "Sweep Grubhub 2026-03 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 80.65,
+        "total_credit": 80.65,
+        "status": "posted"
+      },
+      {
+        "id": "b0928690-1d6b-4787-bbfe-0b2b15fdaee5",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Toast POS 2026-04 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 8304.54,
+        "total_credit": 8304.54,
+        "status": "posted"
+      },
+      {
+        "id": "5611ca5c-ada8-401a-aab9-09037037e711",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Square POS 2026-04 → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 4871.56,
+        "total_credit": 4871.56,
+        "status": "posted"
+      },
+      {
+        "id": "76b8e9ac-981f-44b6-93a4-b5fb8cfd5490",
+        "entry_date": "2026-04-30",
+        "description": "Sweep DoorDash 2026-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 2318.53,
+        "total_credit": 2318.53,
+        "status": "posted"
+      },
+      {
+        "id": "d12702c1-b7d2-48e7-9545-ede8561314da",
+        "entry_date": "2026-04-30",
+        "description": "Sweep UberEats 2026-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 259.02,
+        "total_credit": 259.02,
+        "status": "posted"
+      },
+      {
+        "id": "5c36dbca-e30c-4198-b3ff-2bc5d6a07965",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Grubhub 2026-04 → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 85.85,
+        "total_credit": 85.85,
+        "status": "posted"
+      },
+      {
+        "id": "449cb5cf-0054-41f2-bc1f-f1d21ed64a8b",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Toast POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 50942.34,
+        "total_credit": 50942.34,
+        "status": "posted"
+      },
+      {
+        "id": "43b8c270-b863-4a4d-877a-7428906bae97",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Square POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 9410.25,
+        "total_credit": 9410.25,
+        "status": "posted"
+      },
+      {
+        "id": "f8163ee6-07ce-426c-983e-95c2c9cb00f9",
+        "entry_date": "2026-04-30",
+        "description": "Sweep DoorDash clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 2560.82,
+        "total_credit": 2560.82,
+        "status": "posted"
+      },
+      {
+        "id": "ef849317-ed6d-4d61-8f40-8293d4fd8c91",
+        "entry_date": "2026-04-30",
+        "description": "Sweep UberEats clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 239.1,
+        "total_credit": 239.1,
+        "status": "posted"
+      },
+      {
+        "id": "41b6677f-db42-430e-b187-cb3a1bc556c9",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Grubhub clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 65.11,
+        "total_credit": 65.11,
+        "status": "posted"
+      },
+      {
+        "id": "39c4249f-f93b-4ebe-904e-abb047dc2b12",
+        "entry_date": "2026-04-30",
+        "description": "Sweep Square POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 322.67,
+        "total_credit": 322.67,
+        "status": "posted"
+      },
+      {
+        "id": "aec98370-1640-4dc7-9cec-1bc4fa0d911e",
+        "entry_date": "2026-05-01",
+        "description": "Sweep Square POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 416.07,
+        "total_credit": 416.07,
+        "status": "posted"
+      },
+      {
+        "id": "faf336ab-d679-4ea0-8244-3b0198a4a559",
+        "entry_date": "2026-05-01",
+        "description": "Sweep DoorDash clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 641.1,
+        "total_credit": 641.1,
+        "status": "posted"
+      },
+      {
+        "id": "dbbb6ed9-9702-4ca7-aae2-2cfeedc590a5",
+        "entry_date": "2026-05-01",
+        "description": "Sweep Grubhub clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 25.17,
+        "total_credit": 25.17,
+        "status": "posted"
+      },
+      {
+        "id": "a4fb5906-b624-4916-8e2c-91f78427eb71",
+        "entry_date": "2026-05-13",
+        "description": "Sweep Square POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 7252.79,
+        "total_credit": 7252.79,
+        "status": "posted"
+      },
+      {
+        "id": "8fe18176-7da8-431b-b938-01e5f2b2eb3b",
+        "entry_date": "2026-05-13",
+        "description": "Sweep DoorDash clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 729.01,
+        "total_credit": 729.01,
+        "status": "posted"
+      },
+      {
+        "id": "57b9d4dd-597d-47e7-9af9-ccec394bad32",
+        "entry_date": "2026-05-13",
+        "description": "Sweep UberEats clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 323.49,
+        "total_credit": 323.49,
+        "status": "posted"
+      },
+      {
+        "id": "1dd9a392-3de2-4e0e-bad7-51a27ff5c6fc",
+        "entry_date": "2026-05-13",
+        "description": "Sweep Grubhub clearing → Sales:Food Income:Delivery",
+        "source_type": "revenue_sweep",
+        "total_debit": 83,
+        "total_credit": 83,
+        "status": "posted"
+      },
+      {
+        "id": "2478536d-33ec-4194-ae72-e43b4514bdbc",
+        "entry_date": "2026-05-14",
+        "description": "Sweep Square POS clearing → Sales:Food Income:Dine-In / Takeout",
+        "source_type": "revenue_sweep",
+        "total_debit": 250.16,
+        "total_credit": 250.16,
+        "status": "posted"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "WNAM",
+      "served_by_colo": "LAX",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 15.0673
+      },
+      "duration": 15.0673,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 63057920,
+      "rows_read": 2010,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

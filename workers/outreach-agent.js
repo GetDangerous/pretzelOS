@@ -33,13 +33,57 @@
 import { getDirectiveFromKV } from './cfo-agent.js';
 import { loadBrain } from './brain-loader.js';
 import { sendApprovalRequestEmail } from './approval-mailer.js';
+import { callAI } from './ai-budget.js';
 
 // These defaults are overridden by wrangler.toml env vars at runtime
 const MAX_SENDS_PER_RUN   = 3;      // env.OUTREACH_DAILY_LIMIT
 const WARMUP_WEEKS        = 3;      // env.OUTREACH_WARMUP_WEEKS
 const APPROVAL_GATE_COUNT = 20;     // env.OUTREACH_APPROVAL_GATE — human review until N sends
-const DRAFT_QUALITY_MIN   = 7;      // env.OUTREACH_QUALITY_MIN
+const DRAFT_QUALITY_MIN   = 8;      // env.OUTREACH_QUALITY_MIN — raised from 7 on 2026-04-22: min-of-four-dimensions, reply-likelihood focus
 const MAX_AGENT_LOOPS     = 8;      // Safety limit on tool call rounds
+
+// ── BANNED PHRASE GATE (programmatic, free, instant) ─────────────────────────
+const BANNED_PATTERNS = [
+  /I hope this finds you well/i,
+  /I wanted to reach out/i,
+  /I am writing to/i,
+  /exciting opportunity/i,
+  /exciting partnership/i,
+  /touch base/i,
+  /synergies?/i,
+  /value proposition/i,
+  /please don't hesitate/i,
+  /please don.t hesitate/i,
+  /looking forward to hearing from you/i,
+  /warmer model/i,
+  /one warmer,? one night/i,
+  /trial run/i,
+  /if your guests don.t love it/i,
+  /we pick up the warmer/i,
+  /in today.s competitive/i,
+  /as a \w+ you understand/i,
+  /innovative\s+(solution|approach|partnership)/i,
+  /leverage\s+(our|this|the)/i,
+];
+
+function checkBannedPhrases(subject, body) {
+  const text = `${subject}\n${body}`;
+  const found = [];
+  for (const p of BANNED_PATTERNS) {
+    const match = text.match(p);
+    if (match) found.push(match[0]);
+  }
+  return found;
+}
+
+// Max 25 words per sentence — enforced programmatically
+function checkSentenceLength(body) {
+  // Split on sentence endings, filter out signature block
+  const sigIdx = body.indexOf('--\n');
+  const mainBody = sigIdx > -1 ? body.slice(0, sigIdx) : body;
+  const sentences = mainBody.split(/[.!?]\s+/).filter(s => s.trim().length > 0);
+  return sentences.filter(s => s.split(/\s+/).length > 25);
+}
 
 // ── A/B SUBJECT LINE VARIANTS ────────────────────────────────────────────────
 // Deterministic assignment: hash venue_id → A or B (consistent per venue)
@@ -221,17 +265,26 @@ SOCIAL PROOF (lead with these):
 THE ONE RULE THAT OVERRIDES EVERYTHING:
 Salt Lake City is a small, connected market. A bad email to the wrong person at the wrong time doesn't just lose one account — it damages our reputation across the network that account belongs to. When in doubt, hold or flag for Drew. We have plenty of time. We do not have unlimited goodwill.
 
+THE THREE HARD HOLDS — NO EXCEPTIONS:
+Before you draft, check each. If ANY is true, you do NOT draft. You hold or flag.
+
+(a) NO NAMED CONTACT. If research does not surface a real first name + last name for a specific human at this venue, you do not send. A generic info@ or contact@ with no name is a flag for Drew to do manual contact research — NOT an automated "Hi there,". Nameless greetings land in spam and train the recipient that we are a bot.
+
+(b) NO SPECIFIC HOOK. Every email must open with one concrete, dated, venue-unique detail from the last 90 days — a show announcement, a new hire, a menu change, a renovation, an award, a social post, a press mention. "Your crowd loves pretzels" is not a hook. "Summer is peak season" is not a hook. "Saw your Plazapalooza lineup dropped last week" is a hook. If your research produced no such detail, hold — do not fabricate.
+
+(c) ALREADY HAS A PROGRAM. If the venue already sells pretzels, has a branded snack/food program, or follows Dangerous Pretzel on social, flag for Drew. Do not cold-email a venue that is already in the neighborhood — it reads as a lack of homework.
+
 OPERATING PRINCIPLES:
 
-1. RESEARCH FIRST, ALWAYS. Never draft before you understand the venue. What events do they run? What's their vibe? Do they already mention food? Have they had any problems recently? Is there a hook specific to them?
+1. RESEARCH FIRST, ALWAYS. Never draft before you understand the venue. What events do they run THIS MONTH? Who is the F&B or GM by name? Do they already mention food? Have they had any problems recently? Is there a hook specific to them?
 
-2. LOOK FOR HOLD SIGNALS ACTIVELY. Before drafting, scan for: renovation or closure announcements, very recent bad reviews, seasonal businesses that are off-season, venues that already have a pretzel or snack program, venues that already know the Dangerous Pretzel brand (they follow us, they've been tagged in our posts — these get flagged for Drew, not an automated email).
+2. LOOK FOR HOLD SIGNALS ACTIVELY. Before drafting, scan for: renovation or closure announcements, very recent bad reviews, seasonal businesses that are off-season, venues that already have a pretzel or snack program (flag for Drew, do not auto-email), venues that already know the Dangerous Pretzel brand (they follow us, they've been tagged in our posts — flag for Drew).
 
 3. WRITE FOR THE PERSON, NOT THE CATEGORY. A brewery taproom email and a ski lodge email should sound completely different. What does the GM at THIS venue actually care about on a Tuesday morning?
 
 4. THE OPENING LINE IS EVERYTHING. It must reference something real and specific about their venue. Not "I noticed you're a great brewery" — that's nothing. "Saw your Hazy IPA collab with Epic last month — that's exactly the kind of pairing our Spicy Bee was made for." That's something.
 
-5. SELF-EVALUATE RUTHLESSLY. Before sending, score your draft honestly. A 6 gets rewritten. We send 3 emails a day — they should all be 8s or better.
+5. SELF-EVALUATE RUTHLESSLY — AGAINST REPLY-LIKELIHOOD, NOT TEMPLATE ADHERENCE. Before sending, ask ONE question: "If I were this specific named person, on a busy Tuesday, would I hit reply and type a response to this email? Not open it — REPLY to it." If the answer is not an unambiguous yes, the score is 6 or below. The template is a floor, not a ceiling. Following the template perfectly while being boring and generic is a 5. We are in the SLC market — low volume, high-quality only. A draft scored 8+ must name the ONE concrete reason this venue, today, would say yes. If you cannot name that reason in one sentence, it is not an 8.
 
 6. ONE CTA, FRICTIONLESS. Never "schedule a call." Always offer to do the work: bring samples, drop by Thursday, send a warmer on approval. Make yes the path of least resistance.
 
@@ -325,49 +378,113 @@ CHANNEL DECISIONS:
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runOutreachAgent(env));
+    return runOutreachAgent(env);
   },
 
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (path === '/outreach/run') {
-      // Use ctx.waitUntil so the run continues even if client disconnects
-      ctx.waitUntil(runOutreachAgent(env));
-      return new Response(JSON.stringify({ started: true, message: 'Outreach run started. Check /outreach/queue in ~2 min for new drafts.' }), {
-        headers: { 'Content-Type': 'application/json' }
+    if (path === '/outreach/run' && request.method === 'POST') {
+      const runId = crypto.randomUUID();
+      ctx.waitUntil((async () => {
+        const t0 = Date.now();
+        try {
+          await env.KV.put('outreach_last_run', JSON.stringify({ run_id: runId, status: 'running', started: new Date().toISOString() }));
+          const result = await runOutreachAgent(env);
+          await env.KV.put('outreach_last_run', JSON.stringify({
+            run_id: runId, status: 'completed', result: result || {},
+            started: new Date(t0).toISOString(), completed: new Date().toISOString(),
+            duration_ms: Date.now() - t0,
+          }));
+        } catch (err) {
+          await env.KV.put('outreach_last_run', JSON.stringify({
+            run_id: runId, status: 'failed', error: err.message, stack: (err.stack || '').slice(0, 1000),
+            started: new Date(t0).toISOString(), failed: new Date().toISOString(),
+            duration_ms: Date.now() - t0,
+          })).catch(() => {});
+        }
+      })());
+      return new Response(JSON.stringify({ started: true, run_id: runId, timestamp: new Date().toISOString() }), {
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // Preview: run agent for one venue without sending (dry run)
+    // Check last outreach run result
+    if (path === '/outreach/last-run' && request.method === 'GET') {
+      const data = await env.KV.get('outreach_last_run');
+      return new Response(data || '{"status":"no runs yet"}', {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Preview (sync) and draft-and-park (sync) endpoints REMOVED — they routinely
+    // exceeded the 60s fetch timeout on complex venues. Use the -async variants below
+    // with /outreach/single-run/{job_id} polling.
     if (path === '/outreach/preview' && request.method === 'POST') {
-      const body = await request.json();
-      const venue = await env.DB.prepare(
-        'SELECT * FROM venues WHERE id = ?'
-      ).bind(body.venue_id).first();
-      if (!venue) return new Response('Venue not found', { status: 404 });
-      const brainCtx = await loadBrain(env, 'outreach');
-      const result = await runAgentForVenue(venue, env, true, brainCtx); // dryRun=true
-      return new Response(JSON.stringify(result, null, 2), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(JSON.stringify({
+        error: 'removed',
+        message: 'Use POST /outreach/preview-async → then GET /outreach/single-run/{job_id}',
+      }), { status: 410, headers: { 'Content-Type': 'application/json' } });
     }
 
-    // Draft and park: run agent for one venue for real — parks email for approval
-    if (path === '/outreach/draft-and-park' && request.method === 'POST') {
+    // Async single-venue agent run — launches in background, returns immediately.
+    // mode = 'preview' (dryRun) | 'park' (actually park for approval)
+    if ((path === '/outreach/preview-async' || path === '/outreach/draft-and-park-async') && request.method === 'POST') {
       const body = await request.json();
-      const venue = await env.DB.prepare(
-        'SELECT * FROM venues WHERE id = ?'
-      ).bind(body.venue_id).first();
+      const mode = path.includes('draft-and-park') ? 'park' : 'preview';
+      const venue = await env.DB.prepare('SELECT * FROM venues WHERE id = ?').bind(body.venue_id).first();
       if (!venue) return new Response(JSON.stringify({ error: 'Venue not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
-      const brainCtx = await loadBrain(env, 'outreach');
-      const result = await runAgentForVenue(venue, env, false, brainCtx); // dryRun=false — actually parks
-      return new Response(JSON.stringify(result, null, 2), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const jobId = crypto.randomUUID();
+      const kvKey = `single_run:${jobId}`;
+      await env.KV.put(kvKey, JSON.stringify({ status: 'running', venue_id: venue.id, mode, started: new Date().toISOString() }), { expirationTtl: 3600 });
+      const forcedStep = body.step ? parseInt(body.step) : null;
+      if (forcedStep) {
+        venue._forced_step = forcedStep;
+        // Also set the real sequence_step so the agent's draft logic emits the right copy
+        // (follow-up 1 vs 2 vs break-up). Pull prior send so the follow-up context is built.
+        venue._followup_step = forcedStep;
+        if (forcedStep > 1) {
+          const prior = await env.DB.prepare(
+            `SELECT subject, body, sent_at, sequence_step FROM outreach_logs
+             WHERE venue_id = ? AND direction = 'out' AND sent_at IS NOT NULL
+             ORDER BY sequence_step DESC, sent_at DESC LIMIT 1`
+          ).bind(venue.id).first().catch(() => null);
+          if (prior) {
+            venue._prior_subject = prior.subject;
+            venue._prior_body = prior.body;
+            venue._prior_sent_at = prior.sent_at;
+          }
+        }
+      }
+      ctx.waitUntil((async () => {
+        const t0 = Date.now();
+        try {
+          const brainCtx = await loadBrain(env, 'outreach');
+          const result = await runAgentForVenue(venue, env, mode === 'preview', brainCtx);
+          await env.KV.put(kvKey, JSON.stringify({ status: 'done', venue_id: venue.id, mode, result, duration_ms: Date.now() - t0 }), { expirationTtl: 3600 });
+        } catch (err) {
+          await env.KV.put(kvKey, JSON.stringify({ status: 'failed', venue_id: venue.id, mode, error: err.message, duration_ms: Date.now() - t0 }), { expirationTtl: 3600 });
+        }
+      })());
+      return new Response(JSON.stringify({ job_id: jobId, status: 'running' }), { headers: { 'Content-Type': 'application/json' } });
     }
 
+    // Poll a background single-venue run
+    if (path.startsWith('/outreach/single-run/') && request.method === 'GET') {
+      const jobId = path.split('/outreach/single-run/')[1];
+      const data = await env.KV.get(`single_run:${jobId}`);
+      return new Response(data || '{"status":"unknown"}', { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Draft-and-park (sync) REMOVED — see preview note above. Returns 410 for any
+    // stale caller so the failure is loud, not silent.
+    if (path === '/outreach/draft-and-park' && request.method === 'POST') {
+      return new Response(JSON.stringify({
+        error: 'removed',
+        message: 'Use POST /outreach/draft-and-park-async → then GET /outreach/single-run/{job_id}',
+      }), { status: 410, headers: { 'Content-Type': 'application/json' } });
+    }
     // Approval queue — list emails parked for Drew
     if (path === '/outreach/pending') {
       return getPendingApprovals(env);
@@ -475,6 +592,49 @@ export default {
           'Cache-Control': 'no-store, no-cache, must-revalidate',
         },
       });
+    }
+
+    // Click-tracking redirect — V3 Bug 1.5. Rewritten URLs in outgoing emails
+    // point here; we log the click and 302 to the real destination.
+    // Format: /track/click/:log_id?u=<base64url-encoded URL>
+    if (path.startsWith('/track/click/')) {
+      const logId = path.slice('/track/click/'.length).split('?')[0];
+      const u = url.searchParams.get('u') || '';
+      let dest = '';
+      try {
+        // base64url decode
+        const padded = u.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((u.length + 3) % 4);
+        dest = atob(padded);
+      } catch {
+        dest = '';
+      }
+      // Only follow http(s) destinations — block javascript:, data:, etc.
+      if (!/^https?:\/\//i.test(dest)) {
+        return new Response('Invalid tracked link', { status: 400 });
+      }
+      ctx.waitUntil((async () => {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO email_clicks (id, log_id, clicked_at, url, user_agent, ip)
+             VALUES (?, ?, datetime('now'), ?, ?, ?)`
+          ).bind(
+            crypto.randomUUID(),
+            logId || '',
+            dest.slice(0, 500),
+            (request.headers.get('User-Agent') || '').slice(0, 250),
+            request.headers.get('CF-Connecting-IP') || null
+          ).run();
+          // Also stamp outreach_logs.clicked_at on first click
+          if (logId) {
+            await env.DB.prepare(
+              `UPDATE outreach_logs SET clicked_at = COALESCE(clicked_at, datetime('now')) WHERE id = ?`
+            ).bind(logId).run();
+          }
+        } catch (e) {
+          console.error('[Track] click insert failed:', e.message);
+        }
+      })());
+      return Response.redirect(dest, 302);
     }
 
     // SMS stats — channel breakdown
@@ -657,10 +817,17 @@ export default {
     }
 
     // Approve all pending emails at once (bulk send)
+    // Capped per invocation to prevent CPU timeout mid-loop that would leave
+    // half-sent state. If more pending rows exist, caller can invoke again.
     if (path === '/outreach/approve-all' && request.method === 'POST') {
+      const BULK_CAP = 10;
       const pending = await env.DB.prepare(`
         SELECT id FROM outreach_logs WHERE approval_status = 'pending' AND direction = 'out'
-      `).all();
+        ORDER BY created_at ASC LIMIT ?
+      `).bind(BULK_CAP).all();
+      const totalRemaining = await env.DB.prepare(
+        `SELECT COUNT(*) as c FROM outreach_logs WHERE approval_status = 'pending' AND direction = 'out'`
+      ).first().catch(() => ({ c: 0 }));
       const results = [];
       for (const row of (pending.results || [])) {
         try {
@@ -668,12 +835,16 @@ export default {
           const j = await r.json();
           results.push({ id: row.id, ...j });
         } catch (e) {
+          console.error('[approve-all] send failed for', row.id, e.message);
           results.push({ id: row.id, error: e.message });
         }
       }
-      return new Response(JSON.stringify({ sent: results.filter(r => r.sent).length, results }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const sent = results.filter(r => r.sent).length;
+      const remaining = Math.max(0, (totalRemaining?.c || 0) - sent);
+      return new Response(JSON.stringify({
+        sent, cap: BULK_CAP, remaining, results,
+        note: remaining > 0 ? `${remaining} more pending — call again to continue.` : 'queue empty',
+      }), { headers: { 'Content-Type': 'application/json' } });
     }
 
     // Approve with edits — captures voice corrections for optimizer
@@ -739,7 +910,7 @@ export default {
                 ORDER BY ir.received_at DESC LIMIT 1) as reply_classification
         FROM outreach_logs o
         JOIN venues v ON v.id = o.venue_id
-        WHERE o.approval_status = 'approved' AND o.direction = 'out' AND o.sent_at IS NOT NULL
+        WHERE o.approval_status IN ('approved', 'auto_sent') AND o.direction = 'out' AND o.sent_at IS NOT NULL
         ORDER BY
           CASE WHEN EXISTS(SELECT 1 FROM inbound_replies ir WHERE ir.gmail_thread_id = o.gmail_thread_id) THEN 0 ELSE 1 END,
           o.sent_at DESC
@@ -774,27 +945,375 @@ export default {
       return rejectEmail(body.log_id, body.note, env);
     }
 
-    // Natural language lead search — stub (Phase B)
+    // Natural language lead search — Apollo-backed
     if (path === '/outreach/find-leads' && request.method === 'POST') {
-      return new Response(JSON.stringify({ leads: [], message: 'Natural language search coming soon' }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      try {
+        const body = await request.json();
+        const query = body.query?.trim();
+        if (!query) return new Response(JSON.stringify({ leads: [], message: 'Query required' }), { headers: { 'Content-Type': 'application/json' } });
+        const resp = await fetch('https://api.apollo.io/v1/organizations/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'X-Api-Key': env.APOLLO_API_KEY },
+          body: JSON.stringify({ q_organization_name: query, organization_locations: ['Utah, United States'], per_page: 10 }),
+        });
+        if (!resp.ok) return new Response(JSON.stringify({ leads: [], message: 'Apollo search failed' }), { headers: { 'Content-Type': 'application/json' } });
+        const data = await resp.json();
+        const existing = await env.DB.prepare('SELECT name FROM venues').all();
+        const existingNames = new Set((existing.results || []).map(v => v.name?.toLowerCase()));
+        const leads = (data.organizations || []).map(o => ({
+          name: o.name, city: o.city, website: o.website_url, phone: o.phone,
+          address: o.street_address, category: o.industry || 'unknown',
+          already_in_pipeline: existingNames.has(o.name?.toLowerCase()),
+        }));
+        return new Response(JSON.stringify({ leads }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ leads: [], message: 'Search error: ' + e.message }), { headers: { 'Content-Type': 'application/json' } });
+      }
     }
 
-    // Kanban status update — move venue between pipeline stages
-    if (path === '/pipeline/status' && request.method === 'POST') {
+    // Add a new venue to D1 → ready for enrichment + qualification
+    if (path === '/outreach/add-venue' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.name) return new Response(JSON.stringify({ error: 'name required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const id = crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO venues (id, name, city, category, status, contact_email, website, campaign, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'prospect', ?, ?, ?, datetime('now'), datetime('now'))
+      `).bind(
+        id, body.name, body.city || 'Salt Lake City', body.category || 'brewery',
+        body.contact_email || null, body.website || null,
+        body.category === 'summer_venue' ? 'summer_2026' : null
+      ).run();
+      return new Response(JSON.stringify({ venue_id: id, status: 'created' }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Enrich a single venue — Apollo People Search for contacts
+    if (path === '/outreach/enrich-single' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.venue_id) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const venue = await env.DB.prepare('SELECT id, name, category, website FROM venues WHERE id = ?').bind(body.venue_id).first();
+      if (!venue) return new Response(JSON.stringify({ error: 'Venue not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      try {
+        let domain = null;
+        if (venue.website) { try { domain = new URL(venue.website).hostname.replace('www.', ''); } catch {} }
+        const targetTitles = ['General Manager', 'Owner', 'Manager', 'Director of Operations', 'Event Manager', 'Events Director', 'Taproom Manager', 'Bar Manager', 'Food and Beverage Manager', 'F&B Director'];
+        const searchBody = { person_titles: targetTitles, include_similar_titles: true, person_locations: ['Utah, United States'], per_page: 5 };
+        if (domain) { searchBody.q_organization_domains_list = [domain]; } else { searchBody.q_organization_name = venue.name; searchBody.organization_locations = ['Salt Lake City, Utah']; }
+        const resp = await fetch('https://api.apollo.io/v1/mixed_people/api_search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'X-Api-Key': env.APOLLO_API_KEY },
+          body: JSON.stringify(searchBody),
+        });
+        if (!resp.ok) return new Response(JSON.stringify({ enriched: false, reason: 'Apollo error ' + resp.status }), { headers: { 'Content-Type': 'application/json' } });
+        const data = await resp.json();
+        const people = data.people || [];
+        if (people.length === 0) return new Response(JSON.stringify({ enriched: false, reason: 'No contacts found' }), { headers: { 'Content-Type': 'application/json' } });
+        const best = people.find(p => p.has_email || p.email) || people[0];
+        let email = best.email || null;
+        let contactName = [best.first_name, best.last_name].filter(Boolean).join(' ');
+        let title = best.title || null;
+        if (!email && best.id) {
+          try {
+            const enrichResp = await fetch('https://api.apollo.io/v1/people/match', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'X-Api-Key': env.APOLLO_API_KEY }, body: JSON.stringify({ id: best.id }) });
+            if (enrichResp.ok) { const ed = await enrichResp.json(); if (ed.person?.email) { email = ed.person.email; contactName = ed.person.name || contactName; title = ed.person.title || title; } }
+          } catch {}
+        }
+        if (email) {
+          await env.DB.prepare('UPDATE venues SET contact_email = ?, contact_name = ?, contact_title = ? WHERE id = ?').bind(email, contactName, title, venue.id).run();
+        }
+        return new Response(JSON.stringify({ enriched: !!email, contact_email: email, contact_name: contactName, contact_title: title }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ enriched: false, reason: e.message }), { headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // Qualify a single venue — Claude Haiku scoring
+    if (path === '/outreach/qualify-single' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.venue_id) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const venue = await env.DB.prepare(`
+        SELECT id, name, category, city, address, website, instagram, contact_title, notes,
+               apollo_industry, apollo_description, apollo_employees, apollo_revenue,
+               avg_rating, review_count
+        FROM venues WHERE id = ?
+      `).bind(body.venue_id).first();
+      if (!venue) return new Response(JSON.stringify({ error: 'Venue not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      try {
+        const promptRow = await env.DB.prepare("SELECT prompt_text, system_context FROM agent_prompts WHERE agent_name = 'qualifier' AND active = 1").first();
+        if (!promptRow) return new Response(JSON.stringify({ error: 'Qualifier prompt not found' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        const venueData = JSON.stringify({
+          name: venue.name, category: venue.category, city: venue.city,
+          address: venue.address, website: venue.website,
+          contact_title: venue.contact_title, notes: venue.notes,
+          industry: venue.apollo_industry || null,
+          description: venue.apollo_description || null,
+          employee_count: venue.apollo_employees || null,
+          revenue: venue.apollo_revenue || null,
+          avg_rating: venue.avg_rating || null,
+          review_count: venue.review_count || null,
+          instagram: venue.instagram || null,
+        });
+        const prompt = promptRow.prompt_text.replace('{{venue_data}}', venueData);
+        // DIF-3 (May 13 2026): wired through ai-budget
+        const result = await callAI(env, {
+          use_case: 'outreach_venue_generation',
+          model: 'haiku',
+          caller: 'outreach-agent.js',
+          max_tokens: 300,
+          system: promptRow.system_context,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        if (!result.ok) return new Response(JSON.stringify({ error: 'Claude API error ' + (result.blocked_reason || result.error || 'unknown') }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        const resultText = result.content || '';
+        const clean = resultText.replace(/```json\n?|\n?```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        const resolvedTier = parsed.tier === 'reject' ? 0 : (parsed.tier || (parsed.score >= 70 ? 1 : parsed.score >= 45 ? 2 : 3));
+        const resolvedScore = parsed.score || 0;
+
+        // NOTE: No auto-archive here. This endpoint is called from the Add Venue
+        // modal — a manual add is a high-intent signal, so we always keep the
+        // venue visible regardless of score. The bulk qualifier cron
+        // (qualifier-worker.js) still auto-archives Apollo-scouted tier-3s.
+        await env.DB.prepare('UPDATE venues SET tier = ?, qual_score = ?, icp_fit = ?, qual_summary = ?, updated_at = datetime(\'now\') WHERE id = ?')
+          .bind(resolvedTier, resolvedScore, parsed.icp_fit || 'unknown', parsed.summary || '', venue.id).run();
+        return new Response(JSON.stringify({ qualified: true, tier: resolvedTier, score: resolvedScore, icp_fit: parsed.icp_fit, summary: parsed.summary }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ qualified: false, reason: e.message }), { headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // Venue detail — full venue + outreach history + holds
+    if (path.match(/^\/outreach\/venue-detail\//) && request.method === 'GET') {
+      const venueId = path.split('/outreach/venue-detail/')[1];
+      const [venue, { results: logs }, { results: holds }] = await Promise.all([
+        env.DB.prepare('SELECT * FROM venues WHERE id = ?').bind(venueId).first(),
+        env.DB.prepare('SELECT * FROM outreach_logs WHERE venue_id = ? ORDER BY created_at DESC').bind(venueId).all(),
+        env.DB.prepare('SELECT * FROM outreach_holds WHERE venue_id = ? AND active = 1').bind(venueId).all(),
+      ]);
+      if (!venue) return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ venue, outreach_logs: logs || [], holds: holds || [] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Save venue notes
+    if (path === '/outreach/save-notes' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.venue_id) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      await env.DB.prepare('UPDATE venues SET notes = ?, updated_at = datetime(\'now\') WHERE id = ?').bind(body.notes || '', body.venue_id).run();
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Log pipeline feedback (archive reasons, junk flags, etc.) for feedback loop
+    if (path === '/outreach/log-feedback' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.venue_id) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      try {
+        // Get venue's Apollo data for the feedback snapshot
+        const venue = await env.DB.prepare('SELECT apollo_industry, apollo_description FROM venues WHERE id = ?').bind(body.venue_id).first();
+        await env.DB.prepare(`
+          INSERT INTO pipeline_feedback (id, venue_id, venue_name, category, action, reason, apollo_industry, apollo_description)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          crypto.randomUUID(), body.venue_id, body.venue_name || '', body.category || '',
+          body.action || 'archived', body.reason || '',
+          venue?.apollo_industry || null, venue?.apollo_description || null
+        ).run();
+        // Also log to scout_rejections if flagged as junk
+        if (body.action === 'flagged_junk' || body.reason?.includes('Not a real venue')) {
+          await env.DB.prepare(`
+            INSERT INTO scout_rejections (id, apollo_id, name, city, category, industry, description, rejection_source, rejection_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'drew', ?)
+          `).bind(
+            crypto.randomUUID(), body.venue_id, body.venue_name || '', '', body.category || '',
+            venue?.apollo_industry || null, (venue?.apollo_description || '').slice(0, 500),
+            body.reason || 'Flagged by Drew'
+          ).run();
+        }
+      } catch (e) {
+        console.error('[Outreach] Feedback log error:', e.message);
+      }
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // All pipeline venues — feeds the kanban board with ALL venues, not just summer
+    if (path === '/pipeline/venues' && request.method === 'GET') {
+      const rows = await env.DB.prepare(`
+        SELECT id, name, city, tier, category, status, campaign,
+               contact_name, contact_email, contact_title, contact_instagram,
+               qual_score, icp_fit, notes,
+               CAST(julianday('now') - julianday(COALESCE(updated_at, created_at)) AS INTEGER) as days_in_stage
+        FROM venues
+        WHERE status NOT IN ('inactive')
+        ORDER BY
+          CASE status WHEN 'active' THEN 0 WHEN 'replied' THEN 1 WHEN 'trial' THEN 2 WHEN 'contacted' THEN 3 ELSE 4 END,
+          tier ASC, name ASC
+      `).all();
+      return new Response(JSON.stringify(rows.results || []), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Follow-up status — how many follow-ups are due at each cadence step
+    if (path === '/outreach/followup-status' && request.method === 'GET') {
+      const [fu3, fu7, fu14] = await Promise.all([
+        env.DB.prepare(`
+          SELECT COUNT(*) as c FROM outreach_logs ol
+          JOIN venues v ON v.id = ol.venue_id
+          WHERE ol.direction = 'out' AND ol.sequence_step = 1
+            AND ol.replied_at IS NULL AND ol.sent_at IS NOT NULL
+            AND v.status = 'contacted'
+            AND datetime(ol.sent_at) < datetime('now', '-3 days')
+            AND datetime(ol.sent_at) > datetime('now', '-14 days')
+            AND NOT EXISTS (SELECT 1 FROM outreach_logs ol2 WHERE ol2.venue_id = ol.venue_id AND ol2.sequence_step >= 2 AND ol2.direction = 'out')
+        `).first(),
+        env.DB.prepare(`
+          SELECT COUNT(*) as c FROM outreach_logs ol
+          JOIN venues v ON v.id = ol.venue_id
+          WHERE ol.direction = 'out' AND ol.sequence_step = 2
+            AND ol.replied_at IS NULL AND ol.sent_at IS NOT NULL
+            AND v.status = 'contacted'
+            AND datetime(ol.sent_at) < datetime('now', '-7 days')
+            AND datetime(ol.sent_at) > datetime('now', '-21 days')
+            AND NOT EXISTS (SELECT 1 FROM outreach_logs ol2 WHERE ol2.venue_id = ol.venue_id AND ol2.sequence_step >= 3 AND ol2.direction = 'out')
+        `).first(),
+        env.DB.prepare(`
+          SELECT COUNT(*) as c FROM outreach_logs ol
+          JOIN venues v ON v.id = ol.venue_id
+          WHERE ol.direction = 'out' AND ol.sequence_step = 3
+            AND ol.replied_at IS NULL AND ol.sent_at IS NOT NULL
+            AND v.status = 'contacted'
+            AND datetime(ol.sent_at) < datetime('now', '-14 days')
+            AND datetime(ol.sent_at) > datetime('now', '-30 days')
+            AND NOT EXISTS (SELECT 1 FROM outreach_logs ol2 WHERE ol2.venue_id = ol.venue_id AND ol2.sequence_step >= 4 AND ol2.direction = 'out')
+        `).first(),
+      ]);
+      return new Response(JSON.stringify({
+        day3_due: fu3?.c || 0,
+        day7_due: fu7?.c || 0,
+        day14_due: fu14?.c || 0,
+        total_due: (fu3?.c || 0) + (fu7?.c || 0) + (fu14?.c || 0),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Pipeline metrics — stage counts, avg days, conversion rates
+    if (path === '/outreach/pipeline-metrics' && request.method === 'GET') {
+      const [{ results: stages }, { results: conversions }, totalSent] = await Promise.all([
+        env.DB.prepare(`
+          SELECT status, COUNT(*) as count,
+            CAST(AVG(julianday('now') - julianday(updated_at)) AS INTEGER) as avg_days
+          FROM venues WHERE status NOT IN ('inactive')
+          GROUP BY status ORDER BY CASE status WHEN 'prospect' THEN 0 WHEN 'contacted' THEN 1 WHEN 'replied' THEN 2 WHEN 'trial' THEN 3 WHEN 'active' THEN 4 ELSE 5 END
+        `).all(),
+        env.DB.prepare(`
+          SELECT
+            COUNT(DISTINCT CASE WHEN ol.sent_at IS NOT NULL THEN ol.venue_id END) as sent,
+            COUNT(DISTINCT CASE WHEN ol.opened_at IS NOT NULL THEN ol.venue_id END) as opened,
+            COUNT(DISTINCT CASE WHEN ol.replied_at IS NOT NULL THEN ol.venue_id END) as replied
+          FROM outreach_logs ol WHERE ol.direction = 'out'
+        `).all(),
+        env.DB.prepare("SELECT COUNT(*) as c FROM venues WHERE status = 'active'").first(),
+      ]);
+      const conv = conversions?.[0] || {};
+      const [staleCount, pipelineWins] = await Promise.all([
+        env.DB.prepare(`
+          SELECT COUNT(*) as c FROM venues
+          WHERE status IN ('prospect', 'contacted')
+            AND julianday('now') - julianday(updated_at) > 14
+        `).first(),
+        env.DB.prepare(`
+          SELECT COUNT(DISTINCT v.id) as c FROM venues v
+          INNER JOIN outreach_logs ol ON ol.venue_id = v.id
+          WHERE v.status = 'active' AND ol.direction = 'out'
+        `).first(),
+      ]);
+      return new Response(JSON.stringify({
+        stages: stages || [],
+        sent: conv.sent || 0, opened: conv.opened || 0, replied: conv.replied || 0,
+        active: totalSent?.c || 0,
+        pipeline_wins: pipelineWins?.c || 0,
+        stale_count: staleCount?.c || 0,
+        open_rate: conv.sent ? Math.round((conv.opened / conv.sent) * 100) : 0,
+        reply_rate: conv.sent ? Math.round((conv.replied / conv.sent) * 100) : 0,
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Kanban status update — agent-reactive transitions with side effects
+    if ((path === '/pipeline/status' || path === '/outreach/transition') && request.method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const { venue_id, status } = body;
+      const venue_id = body.venue_id;
+      const newStatus = body.status;
+      const notes = body.notes || '';
       const validStatuses = ['prospect', 'researching', 'qualified', 'contacted', 'replied', 'trial', 'active', 'inactive'];
-      if (!venue_id || !validStatuses.includes(status)) {
+      if (!venue_id || !validStatuses.includes(newStatus)) {
         return new Response(JSON.stringify({ error: 'venue_id and valid status required' }), {
           status: 400, headers: { 'Content-Type': 'application/json' }
         });
       }
+
+      // Get current venue state
+      const venue = await env.DB.prepare('SELECT * FROM venues WHERE id = ?').bind(venue_id).first();
+      if (!venue) return new Response(JSON.stringify({ error: 'Venue not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      const oldStatus = venue.status;
+
+      // Update status
+      const extraFields = newStatus === 'contacted' ? ', last_contacted = datetime(\'now\')' :
+                           newStatus === 'active' ? ', activated_at = datetime(\'now\')' : '';
       await env.DB.prepare(
-        `UPDATE venues SET status = ?, updated_at = datetime('now') WHERE id = ?`
-      ).bind(status, venue_id).run();
-      return new Response(JSON.stringify({ ok: true, venue_id, status }), {
+        `UPDATE venues SET status = ?${extraFields}, updated_at = datetime('now') WHERE id = ?`
+      ).bind(newStatus, venue_id).run();
+
+      // Log to status history
+      await env.DB.prepare(
+        `INSERT INTO venue_status_history (id, venue_id, old_status, new_status, changed_by, notes, created_at) VALUES (?, ?, ?, ?, 'drew', ?, datetime('now'))`
+      ).bind(crypto.randomUUID(), venue_id, oldStatus, newStatus, notes).run().catch(() => {});
+
+      // Side effects by transition
+      const sideEffects = [];
+
+      if (newStatus === 'contacted' && oldStatus !== 'contacted') {
+        // Create synthetic outreach_log so agent's follow-up system picks this up
+        const contactEmail = venue.contact_email || 'manual';
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO outreach_logs (
+            id, venue_id, sequence_step, channel, direction,
+            subject, body, from_address, to_address,
+            approval_status, agent_reasoning, self_score,
+            sent_at, created_at
+          ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'approved', ?, 10, datetime('now'), datetime('now'))
+        `).bind(
+          crypto.randomUUID(), venue_id,
+          '[Drew handled personally]', '[Manual outreach — ' + (notes || 'contacted via pipeline') + ']',
+          env.FROM_EMAIL, contactEmail,
+          notes || 'Drew contacted this venue directly'
+        ).run();
+        sideEffects.push('outreach_log_created');
+      }
+
+      if (newStatus === 'replied' && oldStatus !== 'replied') {
+        // Create inbound log entry
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO outreach_logs (
+            id, venue_id, sequence_step, channel, direction,
+            subject, body, from_address, to_address,
+            approval_status, agent_reasoning, self_score, replied_at, created_at
+          ) VALUES (?, ?, 0, 'email', 'in', ?, ?, ?, ?, 'approved', ?, 10, datetime('now'), datetime('now'))
+        `).bind(
+          crypto.randomUUID(), venue_id,
+          '[Reply recorded by Drew]', notes || '[Manual reply log]',
+          venue.contact_email || 'unknown', env.FROM_EMAIL,
+          notes || 'Drew recorded a reply from this venue'
+        ).run().catch(() => {});
+        sideEffects.push('reply_logged');
+      }
+
+      if (newStatus === 'active' && oldStatus !== 'active') {
+        // Create active_accounts row
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO active_accounts (
+            id, venue_id, venue_name, fulfilled_by, health_status, churn_risk, created_at, updated_at
+          ) VALUES (?, ?, ?, 'self', 'green', 0, datetime('now'), datetime('now'))
+        `).bind(crypto.randomUUID(), venue_id, venue.name).run().catch(() => {});
+        sideEffects.push('account_created');
+      }
+
+      return new Response(JSON.stringify({ ok: true, venue_id, old_status: oldStatus, status: newStatus, side_effects: sideEffects }), {
         headers: { 'Content-Type': 'application/json' }
       });
     }
@@ -816,13 +1335,77 @@ export default {
     // Pipeline: venues flagged for Drew
     if (path === '/pipeline/flags') {
       const flags = await env.DB.prepare(`
-        SELECT v.*, ol.notes as suggested_approach
+        SELECT v.id, v.name, v.city, v.tier, v.category, v.campaign, v.notes,
+               v.contact_name, v.contact_email, v.contact_instagram, v.updated_at
         FROM venues v
-        LEFT JOIN outreach_logs ol ON ol.venue_id = v.id
         WHERE v.status = 'drew_flag'
-        ORDER BY v.tier
+        ORDER BY v.tier, v.updated_at DESC
       `).all();
-      return new Response(JSON.stringify(flags.results, null, 2), {
+      // Parse reason + suggested_approach out of v.notes (format: "FLAGGED FOR DREW: reason | approach")
+      const parsed = (flags.results || []).map(f => {
+        let reason = '', suggested_approach = '';
+        if (f.notes?.startsWith('FLAGGED FOR DREW:')) {
+          const parts = f.notes.replace('FLAGGED FOR DREW: ', '').split(' | ');
+          reason = parts[0] || '';
+          suggested_approach = parts.slice(1).join(' | ') || '';
+        } else if (f.notes) {
+          reason = f.notes;
+        }
+        return { ...f, reason, suggested_approach };
+      });
+      return new Response(JSON.stringify(parsed, null, 2), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Dismiss a flagged venue — return to prospect pool
+    if (path === '/pipeline/flags/dismiss' && request.method === 'POST') {
+      const body = await request.json();
+      const venueId = body.venue_id;
+      if (!venueId) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400 });
+      await env.DB.prepare(
+        `UPDATE venues SET status = 'prospect', notes = '[Reviewed by Drew] ' || COALESCE(REPLACE(notes, 'FLAGGED FOR DREW: ', ''), ''), updated_at = datetime('now') WHERE id = ? AND status = 'drew_flag'`
+      ).bind(venueId).run();
+      await env.KV.delete(`drew_flag:${venueId}`);
+      return new Response(JSON.stringify({ dismissed: true, venue_id: venueId }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Convert a flagged venue — mark as contacted (Drew handled it)
+    if (path === '/pipeline/flags/convert' && request.method === 'POST') {
+      const body = await request.json();
+      const venueId = body.venue_id;
+      const newStatus = body.status || 'contacted';
+      const validStatuses = ['prospect', 'researching', 'qualified', 'contacted', 'replied', 'trial', 'active', 'inactive'];
+      if (!venueId) return new Response(JSON.stringify({ error: 'venue_id required' }), { status: 400 });
+      if (!validStatuses.includes(newStatus)) return new Response(JSON.stringify({ error: 'Invalid status' }), { status: 400 });
+      await env.DB.prepare(
+        `UPDATE venues SET status = ?, notes = REPLACE(COALESCE(notes,''), 'FLAGGED FOR DREW: ', '[Resolved] '), updated_at = datetime('now') WHERE id = ?`
+      ).bind(newStatus, venueId).run();
+      await env.KV.delete(`drew_flag:${venueId}`);
+
+      // If marking as contacted, create synthetic outreach_log so day-3/day-7 follow-ups fire
+      if (newStatus === 'contacted') {
+        const venue = await env.DB.prepare('SELECT name, contact_email FROM venues WHERE id = ?').bind(venueId).first();
+        const contactEmail = body.contact_email || venue?.contact_email || 'manual';
+        const notes = body.notes || 'Drew contacted this venue directly (flagged lead)';
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO outreach_logs (
+            id, venue_id, sequence_step, channel, direction,
+            subject, body, from_address, to_address,
+            approval_status, agent_reasoning, self_score,
+            sent_at, created_at
+          ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'approved', ?, 10, datetime('now'), datetime('now'))
+        `).bind(
+          crypto.randomUUID(), venueId,
+          '[Drew handled personally]', '[Manual outreach — ' + notes + ']',
+          env.FROM_EMAIL, contactEmail,
+          notes
+        ).run();
+      }
+
+      return new Response(JSON.stringify({ converted: true, venue_id: venueId, status: newStatus }), {
         headers: { 'Content-Type': 'application/json' }
       });
     }
@@ -935,14 +1518,24 @@ export default {
 
 // ── MAIN RUN LOOP ─────────────────────────────────────────────────────────────
 async function runOutreachAgent(env) {
-  // ── BUSINESS BRAIN ────────────────────────────────────────────────────────
-  const brainContext = await loadBrain(env, 'outreach');
+  // ── BUSINESS BRAIN (resilient — continue without if it fails) ──────────
+  let brainContext = '';
+  try {
+    brainContext = await loadBrain(env, 'outreach') || '';
+  } catch (err) {
+    console.error('[Outreach] Brain load failed, continuing without:', err.message);
+  }
   console.log('[Outreach] Brain loaded:', brainContext ? brainContext.split('\n').length + ' lines' : 'empty');
 
-  // ── CFO DIRECTIVE ──────────────────────────────────────────────────────────
-  const directive = await getDirectiveFromKV(env.KV);
-  const outreachDirective = directive?.outreach_directive || null;
-  const growthBrake = directive?.growth_brake === 1;
+  // ── CFO DIRECTIVE (resilient — continue without if it fails) ───────────
+  let outreachDirective = null, growthBrake = false;
+  try {
+    const directive = await getDirectiveFromKV(env.KV);
+    outreachDirective = directive?.outreach_directive || null;
+    growthBrake = directive?.growth_brake === 1;
+  } catch (err) {
+    console.error('[Outreach] Directive load failed, continuing without:', err.message);
+  }
   const { maxSends, approvalGate, qualityMin } = cfg(env);
   let effectiveMaxSends = maxSends;
 
@@ -953,7 +1546,7 @@ async function runOutreachAgent(env) {
   if (outreachDirective) {
     console.log(`[Agent] CFO outreach_directive: ${outreachDirective}`);
   }
-  console.log(`[Agent] CFO directive loaded: ${directive ? 'active' : 'none'}`);
+  console.log(`[Agent] CFO directive loaded: ${outreachDirective ? 'active' : 'none'}`);
 
   const inWarmup  = isWarmupPeriod(env);
   const sendCount = await getTotalSentCount(env);
@@ -1066,8 +1659,16 @@ async function runOutreachAgent(env) {
   `).bind(freshLimit).all();
 
   // Follow-ups first (higher conversion), then fresh leads
-  const candidates = [...followups, ...(venues.results || [])];
-  console.log(`[Agent] ${candidates.length} total candidates (${followups.length} follow-ups + ${(venues.results || []).length} fresh)`);
+  // HARD CAP: never process more than 2x max sends per run to bound CPU time
+  const PROCESS_CAP = Math.max(4, effectiveMaxSends * 2);
+  // Hard wall-clock budget (Cloudflare scheduled handlers cap at ~15min; janitor flags
+  // anything stuck in 'running' for 15min as failed). Stop processing candidates if we
+  // approach the limit so the run completes cleanly and writes its summary.
+  const TIME_BUDGET_MS = 12 * 60 * 1000;
+  const candidates = [...followups, ...(venues.results || [])].slice(0, PROCESS_CAP);
+  console.log(`[Agent] ${candidates.length} total candidates (${followups.length} follow-ups + ${(venues.results || []).length} fresh) [cap=${PROCESS_CAP}]`);
+
+  const PER_CANDIDATE_TIMEOUT_MS = 60_000; // 60s per candidate max
 
   let processed = 0;
   let sent      = 0;
@@ -1075,12 +1676,18 @@ async function runOutreachAgent(env) {
   let flagged   = 0;
   let followupsSent = 0;
   let freshSent     = 0;
+  const runStart = Date.now();
 
   for (const venue of candidates) {
     if (sent >= effectiveMaxSends) break;
+    if (Date.now() - runStart > TIME_BUDGET_MS) {
+      console.log(`[Agent] Time budget (${TIME_BUDGET_MS}ms) reached at processed=${processed} sent=${sent}; stopping early to avoid janitor timeout.`);
+      break;
+    }
 
     const isFollowUp = (venue._followup_step || 1) > 1;
     console.log(`[Agent] Processing: ${venue.name} (${venue.campaign || venue.category})${isFollowUp ? ` [follow-up step ${venue._followup_step}]` : ''}`);
+    const candT0 = Date.now();
 
     // Load summer-specific prompt from DB — category-aware
     let summerPromptRow = null;
@@ -1105,7 +1712,17 @@ async function runOutreachAgent(env) {
       ).bind(promptId).first();
     }
 
-    const result = await runAgentForVenue(venue, env, false, brainContext, summerPromptRow);
+    let result;
+    try {
+      result = await Promise.race([
+        runAgentForVenue(venue, env, false, brainContext, summerPromptRow),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`candidate timeout ${PER_CANDIDATE_TIMEOUT_MS}ms`)), PER_CANDIDATE_TIMEOUT_MS)),
+      ]);
+    } catch (err) {
+      console.error(`[Agent] Candidate ${venue.name} failed after ${Date.now() - candT0}ms:`, err.message);
+      result = { action: 'error', error: err.message };
+    }
+    console.log(`[Agent] Candidate ${venue.name} done in ${Date.now() - candT0}ms → ${result.action}`);
 
     processed++;
     if (result.action === 'sent' || result.action === 'parked') {
@@ -1121,8 +1738,15 @@ async function runOutreachAgent(env) {
     if (result.action === 'held')    held++;
     if (result.action === 'flagged') flagged++;
 
-    await sleep(2000); // breathing room between venues
+    // Jitter between venues — avoid the 14:02-14:05 UTC batch signature.
+    // 15s to 75s, randomized. Tightened from 30s-4min: the wider range was blowing
+    // the 15min Cloudflare scheduled-handler budget on multi-send runs and the
+    // janitor was flagging completed runs as failed. ~45s avg still gives email
+    // providers a non-burst signature.
+    const jitterMs = 15_000 + Math.floor(Math.random() * 60_000);
+    await sleep(jitterMs);
   }
+  console.log(`[Agent] Candidate loop finished in ${Date.now() - runStart}ms — processed=${processed} sent=${sent} held=${held} flagged=${flagged}`);
 
   // Update weekly metrics
   await updateWeeklyMetrics(env, { sent, held, flagged });
@@ -1240,11 +1864,199 @@ async function runOutreachAgent(env) {
   }
 
   console.log(`[Agent] Done. Processed: ${processed}, Sent/Parked: ${sent} (${freshSent} fresh, ${followupsSent} follow-ups), Held: ${held}, Flagged: ${flagged}, SMS: ${smsSent}, DM drafts: ${dmsDrafted}`);
+
+  // Stall alert: outreach ran with candidates but sent nothing
+  if (sent === 0 && candidates.length > 0) {
+    try {
+      await sendGmail(env, {
+        to: env.DREW_EMAIL,
+        subject: '⚠️ Outreach ran but sent 0 emails',
+        body: `The outreach agent processed ${candidates.length} candidates but sent nothing.\n\nBreakdown:\n- Follow-ups queued: ${followups.length} (day-3: ${fu3.results?.length || 0}, day-7: ${fu7.results?.length || 0}, day-14: ${fu14.results?.length || 0})\n- Fresh leads queued: ${(venues.results||[]).length}\n- Held: ${held}\n- Flagged: ${flagged}\n\nCheck dashboard: https://pretzel-dashboard.pages.dev`,
+      });
+    } catch (e) { console.error('[Agent] Stall alert email failed:', e.message); }
+  }
+
   return { processed, sent, held, flagged, followups_sent: followupsSent, fresh_sent: freshSent, sms_sent: smsSent, dms_drafted: dmsDrafted, warmup: inWarmup, gate: inGate };
 }
 
 // ── AGENT LOOP FOR ONE VENUE ──────────────────────────────────────────────────
+// Phase D helper: park an operator-authored draft verbatim (bypass LLM).
+async function _persistOperatorDraft(venue, env, { subject, body, step_n }) {
+  const logId = crypto.randomUUID();
+  await env.DB.prepare(`
+    INSERT INTO outreach_logs (
+      id, venue_id, direction, sequence_step, subject, body,
+      approval_status, self_score, created_at
+    ) VALUES (?, ?, 'out', ?, ?, ?, 'pending', 10, datetime('now'))
+  `).bind(logId, venue.id, step_n, subject, body).run();
+  return {
+    action: 'parked',
+    parked: true,
+    log_id: logId,
+    subject,
+    body,
+    selfScore: 10,
+    reasoning: `Operator-authored draft for step ${step_n} parked for approval (bypassed LLM).`,
+  };
+}
+// Bug 1.1 — canContactAddress: pre-flight check before spending compute on a draft,
+// parking a draft, or firing a Gmail send. Defense-in-depth: called at 3 sites.
+// Returns { ok: true } or { ok: false, reason: <code>, detail: <string> }.
+// Reasons: no_address | placeholder_address | recent_send_exists | previously_declined
+async function canContactAddress(toAddress, env, opts = {}) {
+  if (!toAddress || typeof toAddress !== 'string') return { ok: false, reason: 'no_address' };
+  const addr = toAddress.trim().toLowerCase();
+
+  // Block obvious placeholders (test emails, docs/example domains, role aliases that bounce)
+  const INVALID_PATTERNS = [
+    /@domain\.(com|org|net)$/i,
+    /@example\./i,
+    /^test@/i,
+    /^user@/i,
+    /^noreply@/i,
+    /^no-reply@/i,
+    /^donotreply@/i,
+    /^info@info\./i,
+    /@localhost/i,
+    /^[^@]*@$/,   // missing domain
+    /@[^.]+$/,    // missing TLD
+  ];
+  if (INVALID_PATTERNS.some(p => p.test(addr))) {
+    return { ok: false, reason: 'placeholder_address', detail: `Pattern-matched invalid address: ${addr}` };
+  }
+
+  // Block if we already sent to this address within the last 90 days.
+  // Prevents Red Butte 5× / This Is The Place 3× style pile-ons.
+  // Follow-ups intentionally re-send within the window — opts.isFollowUp skips this check.
+  if (!opts.isFollowUp) {
+    const recentSend = await env.DB.prepare(`
+      SELECT id, sent_at, subject, venue_id
+      FROM outreach_logs
+      WHERE LOWER(to_address) = ?
+        AND sent_at IS NOT NULL
+        AND sent_at >= datetime('now', '-90 days')
+      ORDER BY sent_at DESC
+      LIMIT 1
+    `).bind(addr).first().catch(() => null);
+    if (recentSend) {
+      return {
+        ok: false,
+        reason: 'recent_send_exists',
+        detail: `Last sent ${recentSend.sent_at?.slice(0, 10)} for ${recentSend.venue_id} — subject: ${(recentSend.subject || '').slice(0, 60)}`,
+      };
+    }
+  }
+
+  // Block if a prior reply classified as closed — never re-pitch someone who said
+  // "already has vendor" / "not interested" / unsubscribed.
+  const declined = await env.DB.prepare(`
+    SELECT classification, received_at
+    FROM inbound_replies
+    WHERE LOWER(from_email) = ?
+      AND classification IN ('already_has_vendor', 'not_interested', 'unsubscribe', 'negative')
+    ORDER BY received_at DESC
+    LIMIT 1
+  `).bind(addr).first().catch(() => null);
+  if (declined) {
+    return {
+      ok: false,
+      reason: 'previously_declined',
+      detail: `Classified as ${declined.classification} on ${declined.received_at?.slice(0, 10)}`,
+    };
+  }
+
+  // Audit Gap 7 — domain-level declined check. If ANY contact in this org has
+  // previously said "already has vendor" / "not interested" / unsubscribed,
+  // block new outreach to a different mailbox at the same domain. This catches
+  // the thisistheplace.org case where tkramer@ replied but the venue
+  // contact_email was CustomerService@ — exact-email match would miss it.
+  // Skip common free-mail providers (gmail/yahoo/outlook) — different
+  // personal addresses are not "same org".
+  const at = addr.indexOf('@');
+  if (at > 0) {
+    const domain = addr.slice(at + 1);
+    const FREE_MAIL = new Set([
+      'gmail.com', 'googlemail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
+      'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com',
+      'msn.com', 'live.com', 'ymail.com',
+    ]);
+    if (!FREE_MAIL.has(domain)) {
+      const domainDeclined = await env.DB.prepare(`
+        SELECT from_email, classification, received_at
+        FROM inbound_replies
+        WHERE LOWER(from_email) LIKE ?
+          AND classification IN ('already_has_vendor', 'not_interested', 'unsubscribe', 'negative')
+        ORDER BY received_at DESC
+        LIMIT 1
+      `).bind('%@' + domain).first().catch(() => null);
+      if (domainDeclined) {
+        return {
+          ok: false,
+          reason: 'previously_declined',
+          detail: `Domain ${domain} declined via ${domainDeclined.from_email} (${domainDeclined.classification}) on ${domainDeclined.received_at?.slice(0, 10)}`,
+        };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
 async function runAgentForVenue(venue, env, dryRun = false, brainContext = '', summerPromptRow = null) {
+  // Bug 1.1 Site (a): pre-draft dedup gate. If the venue's contact email is blocked,
+  // skip the entire drafting step — don't waste Claude compute generating copy we
+  // can't send. Mark the venue as lead_closed so the agent never retries.
+  //
+  // Follow-ups (sequence_step > 1) intentionally go to the same address as the
+  // prior send within the 90-day window — that IS the follow-up. For those,
+  // bypass the recent_send_exists reason but still enforce placeholder_address
+  // and previously_declined (hard blocks regardless of sequence).
+  const _isFollowUpForGate = (venue._followup_step || 1) > 1;
+  if (!dryRun && venue.contact_email) {
+    const gate = await canContactAddress(venue.contact_email, env, { isFollowUp: _isFollowUpForGate });
+    if (!gate.ok) {
+      console.log(`[Outreach] Contact gate blocked ${venue.contact_email} for ${venue.id}: ${gate.reason} — ${gate.detail}`);
+      if (gate.reason === 'placeholder_address' || gate.reason === 'previously_declined') {
+        await env.DB.prepare(`
+          UPDATE venues SET status = 'lead_closed',
+            notes = COALESCE(notes || char(10), '') || ?,
+            updated_at = datetime('now')
+          WHERE id = ? AND status != 'lead_closed'
+        `).bind(`[auto ${new Date().toISOString().slice(0, 10)} gate:${gate.reason}] ${gate.detail || ''}`, venue.id).run().catch(e => console.error('[Outreach] lead_closed mark failed:', e.message));
+      }
+      return { action: 'skipped', reasoning: `Contact gate: ${gate.reason}. ${gate.detail || ''}` };
+    }
+  }
+
+  // Phase D: check for per-step override BEFORE drafting
+  const stepForOverride = venue._followup_step || venue._forced_step || 1;
+  const override = await env.DB.prepare(
+    `SELECT skip, custom_subject, custom_body, custom_send_at FROM lead_overrides
+     WHERE lead_id = ? AND funnel = 'wholesale' AND step_n = ?`
+  ).bind(venue.id, stepForOverride).first().catch(() => null);
+  if (override?.skip) {
+    return { action: 'skipped', reasoning: `Step ${stepForOverride} explicitly skipped by operator override.` };
+  }
+  if (override?.custom_send_at) {
+    const target = new Date(override.custom_send_at);
+    if (target > new Date()) {
+      return { action: 'skipped', reasoning: `Step ${stepForOverride} rescheduled by operator to ${override.custom_send_at}. Not yet due.` };
+    }
+  }
+  if (override?.custom_body && !dryRun) {
+    // Operator-authored body: use verbatim, bypass LLM draft, still respect approval gate.
+    const subject = override.custom_subject || `Re: ${venue.name}`;
+    const body = override.custom_body;
+    // Route through existing send-or-park with the gated=true path:
+    try {
+      const result = await _persistOperatorDraft(venue, env, { subject, body, step_n: stepForOverride });
+      return result;
+    } catch (e) {
+      console.error('[overrides] operator-draft persist failed:', e.message);
+      // Fall through to normal agent path as a safety net
+    }
+  }
+
   const isSummerVenue = venue.campaign === 'summer_2026';
 
   // Build summer-specific instructions — category-aware so golf/brewery/fairground
@@ -1283,7 +2095,7 @@ Body: ${venue._prior_body}
 
 FOLLOW-UP RULES:
 - Keep it SHORT (2-4 sentences max). This is a bump, not a new pitch.
-- Reference the prior email casually ("Just bumping this up" / "Wanted to circle back")
+- Reference the prior email casually ("Just following up" / "Wanted to circle back")
 - ${venue._followup_step === 2
     ? 'Day-3 tone: Light, casual, add one new detail or angle. "Hey, quick follow-up — [new hook]. Would love to drop some by."'
     : venue._followup_step === 3
@@ -1291,15 +2103,24 @@ FOLLOW-UP RULES:
     : 'Day-14 BREAK-UP tone: This is the LAST email. Gracious, zero pressure, leave the door open. "Hey — not trying to fill your inbox. Just wanted to say the offer stands whenever timing works. No hard feelings either way. Happy to chat anytime." Sign off warm. This email should make them WANT to reply because you\'re NOT pushing.'}
 - Do NOT re-pitch everything. The first email did that.
 - Use the SAME contact_email as the prior email.
+- SUBJECT LINE: Use "Re: [original subject]" exactly. Do NOT write a new creative subject. The system will enforce this.
+- NO HALLUCINATED EVENTS: Do NOT reference upcoming events, seasons, or dates unless you have confirmed evidence with a specific date. If venue notes mention a timing signal, do NOT assume it is current — it may be stale or evergreen website content. Stick to the offer and the ask.
+- Do NOT use em dashes (—) in subject lines. Use a regular dash (-) or rephrase.
 - Skip fetch_venue_website — you already researched this venue.
 - Start with check_contact_history, then draft_and_evaluate_email, then send_or_park_email.` : '';
 
   // Build timing signal context if signal scanner found a hook for this venue
+  const today = new Date().toISOString().split('T')[0];
+  const currentMonth = new Date().toLocaleString('en-US', { month: 'long' });
   const signalContext = venue._signal_score >= 6
     ? `\n\nTIMING SIGNAL (score ${venue._signal_score}/10, source: ${venue._signal_type}):
 ${venue._signal_summary}
 
-USE THIS SIGNAL as the hook angle for your email. This is a real, recent insight about this venue — reference it specifically in the opening line. This is what makes the email land right now instead of next month.`
+Today is ${today} (${currentMonth}). BEFORE using this signal:
+- Verify the event/season is actually upcoming or current. "Oktoberfest" in April is NOT upcoming.
+- If the signal mentions an event with no specific date, treat it as UNVERIFIED — do not reference it in the email.
+- If the signal IS temporally valid, use it as the hook angle. If NOT, ignore it and find a different angle from your research.
+- NEVER fabricate or assume event dates. If you're not sure, skip the signal entirely.`
     : '';
 
   const messages = [
@@ -1343,7 +2164,7 @@ Only draft and send if you're confident the timing and angle are right.`}`
     loops++;
 
     const response = await callClaudeWithTools(
-      env.ANTHROPIC_API_KEY,
+      env,
       AGENT_SYSTEM_PROMPT + '\n\n' + brainContext,
       messages
     );
@@ -1559,6 +2380,11 @@ async function executeTool(toolName, input, venue, env, dryRun, summerPromptRow 
     case 'flag_for_drew': {
       if (dryRun) return { dry_run: true, would_flag: input };
 
+      // Don't re-flag venues Drew already reviewed
+      if (venue.notes?.includes('[Reviewed by Drew]')) {
+        return { skipped: true, reason: 'Venue was already reviewed by Drew — do not re-flag' };
+      }
+
       await env.KV.put(
         `drew_flag:${input.venue_id}`,
         JSON.stringify({
@@ -1627,51 +2453,69 @@ Research: ${input.research_summary}${voiceExamples}
 SUBJECT LINE A/B TEST — you MUST follow this variant:
 ${variantHint}
 
-REQUIRED STRUCTURE — follow this precisely:
-1. Subject: Follow the A/B variant instruction above. NEVER salesy.
-2. Greeting: "Hi [Name]," (use contact name if known, "Hi there," if not)
-3. Fan opener: 1 sentence. Genuine, specific to this venue.
-4. Social proof + product: 1-2 sentences. Weave in one anchor account naturally. "2'x2' warmer; your staff just warms, salts, and serves."
-5. "Why it fits [Venue]:" header + 3 bullets. Each bullet labeled (e.g. "Late-Night Crowd:", "No Kitchen Needed:", "High Margin:"). One bullet must include real numbers ($10 retail / $6 profit).
-6. CTA: Offer to drop samples + 2-week trial. One specific question.
-7. Sign-off: "Best,\\n\\n--\\nDrew Sparks\\nOwner\\nDangerous Pretzel Co\\nc: 801.916.9122"
+HARD PRECONDITIONS — check before drafting:
+- contact_name has a real first name (not null, not "the team", not "there"). If missing → return {"self_score": 0, "subject": "HOLD", "body": "HOLD:needs_contact_name", "score_breakdown": {}, "rewritten": false}
+- research_summary contains at least one dated, venue-unique detail from the last 90 days (specific show, event, person, news, award, menu change, social post). Category-level framing does not count. If missing → return {"self_score": 0, "subject": "HOLD", "body": "HOLD:no_specific_hook", "score_breakdown": {}, "rewritten": false}
+- research_summary does NOT indicate the venue already sells pretzels, has a branded snack program, or follows Dangerous Pretzel. If it does → return {"self_score": 0, "subject": "HOLD", "body": "HOLD:already_has_program", "score_breakdown": {}, "rewritten": false}
+
+SUBJECT LINE: Follow the A/B variant instruction above. Never salesy.
+
+PICK ONE EMAIL SHAPE — the one that fits this venue's hook best. Do not default to the same shape every time.
+
+SHAPE A — "Short & direct" (use when the hook is strong and recent, e.g. a just-announced show or new hire).
+  Format: 4-6 sentences total, flowing prose, no bullets, no headers.
+  Structure: Named greeting → specific hook sentence → one-line offer → one-line social proof → one-line CTA → signoff.
+  Example voice: "Hi Ember, saw the Lyle Lovett date dropped for July 12 — that's the exact summer-evening crowd our pretzels hit for. We're the pretzel at Sandy Amphitheater and Delta Center; your staff just warms and serves. Mind if I drop some by for your team before the season kicks off? — Drew"
+
+SHAPE B — "Quarters-style with labeled bullets" (use when the hook is operational — a new F&B setup, a renovation, a high-traffic event series).
+  Format: Named greeting → 1-sentence fan opener tied to the hook → 1-sentence product/proof → "Why it fits [Venue]:" header + 3 labeled bullets (one must include real numbers: $10 retail / $6 profit) → 1-sentence CTA → signoff.
+
+SHAPE C — "Question-led" (use when the hook is a visible gap — reviews mentioning no food, an IG post asking for vendor recs, a new opening with no snack menu).
+  Format: Named greeting → open with a direct question tying to the gap ("Are you set on food vendors for the summer series yet?") → 1-sentence of what we'd do → one anchor account name-drop → one-line CTA → signoff.
+
+SIGNOFF (all shapes): "— Drew\\n\\n--\\nDrew Sparks\\nOwner\\nDangerous Pretzel Co\\nc: 801.916.9122"
+
+RULES THAT APPLY TO ALL SHAPES:
+- First non-greeting sentence MUST cite the specific dated hook from research. If you can't, you failed the precondition — return HOLD.
+- No sentence over 25 words. No paragraph over 3 lines.
+- Named greeting ONLY. "Hi there," / "Hi team," / "Hello all," are an automatic HOLD.
+- Vary word choice across shapes — do not recycle "exactly who loves these" or "genuinely great" or "the kind of thing people talk about" in every email.
+- No claims about accounts we don't have. Valid proof: Delta Center, SLC Bees, Sandy Amphitheater, Union Event Center, Pioneer Theater, Powder Mountain, Alta (Goldminer's Daughter), TF Brewery, Hopkins, ROHA, HK Brewing. Everything else = do not cite.
 
 BANNED (instant rewrite): "I hope this finds you well", "I wanted to reach out", "exciting opportunity", "touch base", "synergies", "value proposition", "Please don't hesitate", "Looking forward to hearing from you", any sentence over 25 words.
 
-After writing, score it 1-10 on:
-- Specificity (1-10): Does every sentence reference THIS venue specifically? Are the 3 bullets tailored to their exact venue type?
-- Voice (1-10): Does it sound like Drew texting a friend, not a sales rep? Any banned phrases = instant 4 or below.
-- Friction (1-10): Is the CTA a yes/no question with no homework required for the recipient?
-- Hook (1-10): Would YOU open this email if you ran this venue? Is the subject line human, not spammy?
+SCORE AGAINST REPLY-LIKELIHOOD, NOT TEMPLATE ADHERENCE. The only question is: would this specific named person, on a busy Tuesday, hit reply and type a response? Not open — REPLY.
 
-If any score is below 7, rewrite the email once.
+Score these four dimensions 1-10:
+- Hook (1-10): The opening sentence cites a specific, dated, venue-unique detail from the last 90 days. Generic category framing ("your crowd loves these", "peak season") = 4. A concrete recent reference = 8+. A reference that proves you did more than 30 seconds of research = 10.
+- Reply likelihood (1-10): Imagine you are ${input.contact_name || 'this person'} reading this in an inbox of 40 unread emails. What's the honest probability you type a reply today? 20% = 5. 50% = 8. Don't be optimistic — most cold emails score 3-5 here and that is fine; hold the draft instead of sending a 5.
+- Voice (1-10): Sounds like Drew texting a peer, not a vendor pitching. Any banned phrase or corporate-y hedge = 4 or below.
+- Friction (1-10): One clear yes/no question, no homework required, no scheduling link. Can the recipient answer in under 10 seconds?
+
+self_score = min of the four. Not the average. A draft with 9/9/9/3 is a 3 — not an 8. If any dimension is below 8, REWRITE ONCE. If still below 8 after rewrite, return it anyway — the send_or_park gate will hold it and we'll learn from the pattern.
+
+If you preconditioned-held (contact_name missing, no specific hook, or already_has_program), ignore all of the above and return the HOLD JSON from the precondition section.
 
 Return JSON:
 {
   "subject": "...",
   "body": "...",
   "self_score": 8,
-  "score_breakdown": {"specificity": 8, "voice": 9, "friction": 8, "hook": 7},
+  "score_breakdown": {"hook": 8, "reply_likelihood": 8, "voice": 9, "friction": 9},
   "rewritten": false
 }`; })()
 
-      const draftResponse = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 800,
-          system: AGENT_SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: draftPrompt }],
-        }),
+      // DIF-3 (May 13 2026): wired through ai-budget
+      const draftResult = await callAI(env, {
+        use_case: 'outreach_email_draft',
+        model: 'sonnet',
+        caller: 'outreach-agent.js',
+        max_tokens: 800,
+        system: AGENT_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: draftPrompt }],
       });
 
-      const draftData = await draftResponse.json();
-      const draftText = draftData.content?.[0]?.text || '';
+      const draftText = draftResult.ok ? (draftResult.content || '') : '';
       try {
         const clean = draftText.replace(/```json\n?|\n?```/g, '').trim();
         return JSON.parse(clean);
@@ -1696,6 +2540,77 @@ Return JSON:
         return {
           action: 'held',
           reason: `Draft quality score ${input.self_score} below minimum ${cfg(env).qualityMin}`,
+        };
+      }
+
+      // ── PROGRAMMATIC QUALITY GATES (cannot be bypassed by self-scoring) ──
+
+      // Banned phrase check
+      const bannedFound = checkBannedPhrases(input.subject || '', input.body || '');
+      if (bannedFound.length > 0) {
+        return {
+          action: 'held',
+          reason: `Draft contains banned phrases: ${bannedFound.join(', ')}. Must rewrite.`,
+          banned_phrases: bannedFound,
+        };
+      }
+
+      // Sentence length check (max 25 words)
+      const longSentences = checkSentenceLength(input.body || '');
+      if (longSentences.length > 0) {
+        return {
+          action: 'held',
+          reason: `Draft has ${longSentences.length} sentence(s) over 25 words. Shorten and rewrite.`,
+          long_sentences: longSentences.map(s => s.slice(0, 80) + '...'),
+        };
+      }
+
+      // Agent-signalled HOLD (needs_contact_name, no_specific_hook)
+      if ((input.subject || '').trim() === 'HOLD' || (input.body || '').startsWith('HOLD:')) {
+        const holdReason = (input.body || '').slice(5) || 'agent_hold';
+        // Flag for Drew so a human can find the right contact or hook
+        await env.KV.put(
+          `drew_flag:${input.venue_id}`,
+          JSON.stringify({
+            venue_id: input.venue_id,
+            venue_name: venue.name,
+            reason: `Agent held: ${holdReason}`,
+            suggested_approach: holdReason === 'needs_contact_name'
+              ? 'Find a named contact (LinkedIn, venue staff page, IG DM) before automated outreach'
+              : 'Research a specific hook (recent event, show, news item) before drafting',
+            flagged_at: new Date().toISOString(),
+          }),
+          { expirationTtl: 60 * 60 * 24 * 14 }
+        ).catch(() => {});
+        return { action: 'flagged', reason: holdReason, flagged_for: 'drew' };
+      }
+
+      // Belt-and-braces: block any draft with a nameless greeting.
+      // Matches "Hi there,", "Hi team,", "Hello there,", "Hey there,", "Hi all,", "Hey team,"
+      // at the very start of the body (case-insensitive). Named greetings (Hi Ember,) pass.
+      const firstLine = (input.body || '').trim().split('\n')[0];
+      if (/^(hi|hello|hey|dear)\s+(there|team|all|folks|everyone|y'?all)\b/i.test(firstLine)) {
+        return {
+          action: 'flagged',
+          reason: 'nameless_greeting',
+          flagged_for: 'drew',
+          detail: 'Draft starts with a generic greeting — no named contact. Research a specific person before sending.',
+        };
+      }
+
+      // ── INDEPENDENT VALIDATION (Claude Haiku review — catches hallucinations) ──
+      const validation = await validateOutreachEmail(
+        input.subject, input.body, venue,
+        input.reasoning || '', // agent's research synthesis
+        env
+      );
+      if (!validation.pass) {
+        console.log(`[Outreach] Validation failed for ${venue.name}: ${validation.issues.join(', ')}`);
+        return {
+          action: 'held',
+          reason: `Validation failed: ${validation.issues.join('; ')}`,
+          validation_issues: validation.issues,
+          suggestion: validation.suggestion,
         };
       }
 
@@ -1759,6 +2674,20 @@ Return JSON:
       const seqStep   = venue._followup_step || 1;
       const abVariant = venue._ab_variant || null; // A/B subject line variant
 
+      // ── Follow-up threading: look up prior email's Gmail thread ID ──
+      let priorThreadId = null;
+      if (seqStep > 1 && venue._prior_log_id) {
+        const priorLog = await env.DB.prepare(
+          'SELECT gmail_thread_id, subject FROM outreach_logs WHERE id = ?'
+        ).bind(venue._prior_log_id).first();
+        priorThreadId = priorLog?.gmail_thread_id || null;
+
+        // Enforce Re: subject for follow-ups (thread consistency)
+        if (priorLog?.subject && !input.subject.startsWith('Re:')) {
+          input.subject = `Re: ${priorLog.subject}`;
+        }
+      }
+
       if (inGate) {
         // Spawn durable Workflow — handles D1 write + approval email + send atomically
         // No duplicate sends: waitForEvent is atomic, step.do() is idempotent on retry
@@ -1778,6 +2707,7 @@ Return JSON:
                 channel: 'outreach',
                 sequenceStep: seqStep,
                 subjectVariant: abVariant,
+                threadId: priorThreadId,
               },
             });
           } catch (err) {
@@ -1787,12 +2717,14 @@ Return JSON:
               INSERT INTO outreach_logs (
                 id, venue_id, sequence_step, channel, direction,
                 subject, body, from_address, to_address,
+                gmail_thread_id,
                 approval_status, agent_reasoning, self_score,
                 subject_variant, created_at
-              ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
+              ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
             `).bind(
               logId, input.venue_id, seqStep, input.subject, input.body,
               env.FROM_EMAIL, venue.contact_email,
+              priorThreadId,
               input.reasoning, input.self_score, abVariant
             ).run();
             await sendApprovalRequestEmail({
@@ -1810,12 +2742,14 @@ Return JSON:
             INSERT INTO outreach_logs (
               id, venue_id, sequence_step, channel, direction,
               subject, body, from_address, to_address,
+              gmail_thread_id,
               approval_status, agent_reasoning, self_score,
               subject_variant, created_at
-            ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
           `).bind(
             logId, input.venue_id, seqStep, input.subject, input.body,
             env.FROM_EMAIL, venue.contact_email,
+            priorThreadId,
             input.reasoning, input.self_score, abVariant
           ).run();
           await sendApprovalRequestEmail({
@@ -1831,12 +2765,14 @@ Return JSON:
         return { action: 'parked', log_id: logId, reason: 'Human approval gate active' };
 
       } else {
-        // Send directly
+        // Send directly (with threading for follow-ups)
         const gmailResult = await sendGmail(env, {
           to:      venue.contact_email,
           subject: input.subject,
           body:    input.body,
+          threadId: priorThreadId,
           logId,
+          isFollowUp: seqStep > 1,
         });
 
         await env.DB.prepare(`
@@ -2020,29 +2956,27 @@ Return JSON:
 }
 
 // ── CLAUDE API CALL WITH TOOL USE ─────────────────────────────────────────────
-async function callClaudeWithTools(apiKey, systemPrompt, messages) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
-      system: systemPrompt,
-      tools: AGENT_TOOLS,
-      messages,
-    }),
+async function callClaudeWithTools(env, systemPrompt, messages) {
+  // DIF-3 (May 13 2026): wired through ai-budget
+  // Tool-loop pattern: callers expect `response.content` (raw blocks array)
+  // and `response.stop_reason`. We reconstruct that shape from callAI's
+  // result.raw so the agentic loop's behavior is preserved exactly.
+  const result = await callAI(env, {
+    use_case: 'outreach_copy_review',
+    model: 'sonnet',
+    caller: 'outreach-agent.js',
+    max_tokens: 2000,
+    system: systemPrompt,
+    tools: AGENT_TOOLS,
+    messages,
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${text}`);
+  if (!result.ok) {
+    throw new Error(`Claude API error: ${result.blocked_reason || result.error || 'unknown'}`);
   }
 
-  return response.json();
+  // Preserve the raw response shape consumed by the agentic loop.
+  return result.raw;
 }
 
 // ── APPROVAL QUEUE ────────────────────────────────────────────────────────────
@@ -2134,6 +3068,7 @@ async function approveAndSend(logId, env) {
     subject: log.subject,
     body:    log.body,
     logId,
+    isFollowUp: (log.sequence_step || 1) > 1,
   });
 
   if (gmailResult?.error) {
@@ -2215,38 +3150,33 @@ Rewrite the email incorporating this feedback exactly. Keep the same core offer 
 
 Return JSON only: {"subject": "...", "body": "...", "self_score": N, "score_breakdown": "..."}`;
 
-  let response;
-  try {
-    response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 800,
-        messages: [{ role: 'user', content: redraftPrompt }],
-      }),
-    });
-  } catch (err) {
-    console.error('[Redraft] Claude API unreachable:', err.message);
-    return new Response(JSON.stringify({ error: 'Claude API unreachable: ' + err.message }), {
+  // DIF-3 (May 13 2026): wired through ai-budget
+  const result = await callAI(env, {
+    use_case: 'outreach_response_generation',
+    model: 'sonnet',
+    caller: 'outreach-agent.js',
+    max_tokens: 800,
+    messages: [{ role: 'user', content: redraftPrompt }],
+  });
+
+  if (!result.ok) {
+    // callAI prefixes exceptions with "exception:" — map to the original
+    // "unreachable" 502; everything else (non-ok HTTP, budget block) maps
+    // to the original "API error" 502.
+    const errStr = result.error || result.blocked_reason || 'unknown';
+    if (errStr.startsWith('exception:')) {
+      console.error('[Redraft] Claude API unreachable:', errStr);
+      return new Response(JSON.stringify({ error: 'Claude API unreachable: ' + errStr }), {
+        status: 502, headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    console.error('[Redraft] Claude API error:', errStr.slice(0, 200));
+    return new Response(JSON.stringify({ error: 'Claude API error', detail: errStr.slice(0, 300) }), {
       status: 502, headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => 'unknown');
-    console.error('[Redraft] Claude API error:', response.status, errText.slice(0, 200));
-    return new Response(JSON.stringify({ error: 'Claude API error ' + response.status, detail: errText.slice(0, 300) }), {
-      status: 502, headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  const data = await response.json();
-  const text = data.content?.[0]?.text || '';
+  const text = result.content || '';
   let draft;
   try {
     draft = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
@@ -2362,7 +3292,161 @@ async function updateWeeklyMetrics(env, { sent, held, flagged }) {
   `).bind(sent).run();
 }
 
-async function sendGmail(env, { to, subject, body, threadId, logId }) {
+// ── EMAIL VALIDATION (independent Claude review — catches hallucinations) ─────
+// Mirrors retail validateSMS() pattern: separate LLM call reviews the draft
+// against research data, venue context, and current date.
+async function validateOutreachEmail(subject, body, venue, researchData, env) {
+  const issues = [];
+
+  // Layer 1: Programmatic checks (free, instant)
+  const banned = checkBannedPhrases(subject, body);
+  if (banned.length > 0) issues.push(`Banned phrases: ${banned.join(', ')}`);
+
+  const longSentences = checkSentenceLength(body);
+  if (longSentences.length > 0) issues.push(`${longSentences.length} sentence(s) over 25 words`);
+
+  // Check signature block
+  if (!body.includes('Drew Sparks') || !body.includes('801.916.9122')) {
+    issues.push('Missing or incomplete signature block');
+  }
+  if (body.includes('Drew Craker')) {
+    issues.push('Wrong name in signature — should be Drew Sparks, not Drew Craker');
+  }
+
+  // Layer 2: Claude Haiku review (cheap, catches hallucinations + voice)
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const currentMonth = new Date().toLocaleString('en-US', { month: 'long' });
+
+    const reviewPrompt = `You are a quality reviewer for cold outreach emails sent by Dangerous Pretzel Co (a Salt Lake City soft pretzel brand).
+
+Today's date: ${today} (${currentMonth})
+
+VENUE CONTEXT:
+Name: ${venue.name}
+Category: ${venue.category || 'unknown'}
+Notes: ${(venue.notes || '').slice(0, 500)}
+Qualifier summary: ${(venue.qual_summary || '').slice(0, 300)}
+
+RESEARCH DATA AVAILABLE TO THE DRAFTER:
+${(researchData || 'No research data recorded').slice(0, 800)}
+
+DRAFT EMAIL:
+Subject: ${subject}
+Body:
+${body}
+
+Review this email for these specific issues. Return JSON only:
+
+1. HALLUCINATION CHECK: Does the email reference any facts, events, dates, or details NOT present in the venue context or research data? Examples:
+   - Mentioning an event (Oktoberfest, summer concert, etc.) with no evidence it's upcoming
+   - Claiming the venue doesn't have food when research doesn't confirm this
+   - Referencing specific menu items, staff names, or details not in the research
+
+2. TEMPORAL CHECK: Are seasonal/event references actually current for ${currentMonth}?
+   - "Oktoberfest coming up" in April = FAIL
+   - "Summer season" in April = OK (upcoming)
+   - "Patio season" in April in Salt Lake City = OK
+
+3. VOICE CHECK: Does it sound like a local business owner texting a peer, or a sales rep?
+   - Corporate energy, buzzwords, or pitch-deck language = FAIL
+   - Overly formal or stiff = FAIL
+
+4. VENUE FIT: Does the pitch match the venue type?
+   - Telling a full-service restaurant "no kitchen needed" = awkward
+   - Brewery pitch should reference beer/taproom context
+
+5. EXISTING PROGRAM CHECK: Do the venue notes, qualifier summary, or research data indicate the venue ALREADY sells pretzels, already has a branded snack/food partner, or already follows Dangerous Pretzel on social? Look for: "pretzel", "already have vendor", "already have snack", "food partner", "branded concession", "@dangerouspretzelco" in followers/mentions. If yes = FAIL with issue "already_has_program" — this should have been held, not drafted.
+
+6. SPECIFIC HOOK CHECK: Does the opening sentence (first non-greeting sentence) reference a specific, dated, venue-unique detail? Not "your crowd", not "peak season", not "concert-goers love pretzels" — an actual show, event, person, news item, or social post that could only apply to THIS venue. If the opener is generic category framing = FAIL with issue "generic_opener".
+
+7. NAMELESS GREETING: If the email opens with "Hi there,", "Hi team,", "Hello all,", "Dear team," or any variant without a named human = FAIL with issue "nameless_greeting".
+
+Return ONLY this JSON:
+{"pass": true/false, "issues": ["issue1", "issue2"], "suggestion": "one-line fix if minor, null if major rewrite needed"}`;
+
+    // DIF-3 (May 13 2026): wired through ai-budget
+    const reviewResult = await callAI(env, {
+      use_case: 'outreach_evaluation',
+      model: 'haiku',
+      caller: 'outreach-agent.js',
+      max_tokens: 300,
+      messages: [{ role: 'user', content: reviewPrompt }],
+    });
+
+    if (!reviewResult.ok) {
+      // Mirror the original catch-block behavior: surface "haiku review failed".
+      throw new Error(reviewResult.blocked_reason || reviewResult.error || 'review_failed');
+    }
+
+    const reviewText = reviewResult.content || '';
+    const clean = reviewText.replace(/```json\n?|\n?```/g, '').trim();
+    const review = JSON.parse(clean);
+
+    if (!review.pass && review.issues) {
+      issues.push(...review.issues);
+    }
+
+    return {
+      pass: issues.length === 0,
+      issues,
+      suggestion: review.suggestion || null,
+      review_source: 'haiku',
+    };
+  } catch (err) {
+    // If Haiku review fails, still return programmatic issues
+    console.error(`[Outreach] Validation review error: ${err.message}`);
+    return {
+      pass: issues.length === 0,
+      issues,
+      suggestion: null,
+      review_source: 'programmatic_only',
+    };
+  }
+}
+
+// RFC 2047 encode subject line when it contains non-ASCII characters
+function encodeSubject(subject) {
+  if (/^[\x00-\x7F]*$/.test(subject)) return subject;
+  const bytes = new TextEncoder().encode(subject);
+  const b64 = btoa(String.fromCharCode(...bytes));
+  return `=?UTF-8?B?${b64}?=`;
+}
+
+// ── CLICK TRACKING REWRITE ───────────────────────────────────────────────────
+// V3 Bug 1.5 — wrap every http(s) link in the email body with a tracked
+// redirect. Skips `mailto:`, `tel:`, and the tracking pixel itself.
+function rewriteLinksForTracking(body, logId) {
+  if (!body || !logId) return body;
+  const base = 'https://pretzel-os.drew-f39.workers.dev/track/click/';
+  // b64url-safe encoder
+  const encode = (s) => {
+    const bytes = new TextEncoder().encode(s);
+    const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+    return btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  // Match bare URLs (not inside <a href=...>, not the tracking pixel URL itself).
+  // We rewrite http/https URLs, one replacement per match.
+  return body.replace(/(https?:\/\/[^\s<>"')]+)/g, (match) => {
+    if (match.startsWith('https://pretzel-os.drew-f39.workers.dev/outreach/pixel/')) return match;
+    if (match.startsWith('https://pretzel-os.drew-f39.workers.dev/track/click/')) return match;
+    return `${base}${logId}?u=${encode(match)}`;
+  });
+}
+
+async function sendGmail(env, { to, subject, body, threadId, logId, isFollowUp = false }) {
+  // Bug 1.1 Site (c): final send-time gate. Belt-and-braces defense in case a draft
+  // slipped past the pre-draft + approval-queue gates. Abort loudly if blocked.
+  // Follow-ups (isFollowUp=true) intentionally bypass recent_send_exists.
+  const gate = await canContactAddress(to, env, { isFollowUp });
+  if (!gate.ok) {
+    console.error(`[Outreach] sendGmail ABORTED — ${gate.reason}: ${gate.detail || ''} (to=${to}, logId=${logId})`);
+    throw new Error(`contact_gate_blocked: ${gate.reason}`);
+  }
+
+  // V3 Bug 1.5 — rewrite http(s) URLs in the body for click tracking before HTML-ify.
+  body = rewriteLinksForTracking(body, logId);
+
   const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -2385,7 +3469,7 @@ async function sendGmail(env, { to, subject, body, threadId, logId }) {
   const message = [
     `To: ${to}`,
     `From: Drew <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`,
+    `Subject: ${encodeSubject(subject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=utf-8',
     '',
@@ -2565,9 +3649,26 @@ export async function runSignalScanner(env) {
 
   let signalsFound = 0;
   let scanned = 0;
+  // Hard cap and per-venue timeout so the scheduled handler never blows its CPU
+  // budget and leaves cron_runs with a zombie 'running' row. 30s per venue × 15 = 7.5min
+  // worst-case which is under the typical 15-min scheduled-handler wall.
+  const SCAN_CAP = 15;
+  const PER_VENUE_TIMEOUT_MS = 30_000;
+  const scanStart = Date.now();
+  const loopCandidates = candidates.slice(0, SCAN_CAP);
 
-  for (const venue of candidates) {
+  for (const venue of loopCandidates) {
+    // Global budget check — if we're already at 10min across the whole loop, stop.
+    if (Date.now() - scanStart > 10 * 60 * 1000) {
+      console.warn('[Signal Scanner] 10min budget exhausted — stopping early at', scanned, 'scanned');
+      break;
+    }
+    const vStart = Date.now();
     try {
+      // Per-venue timeout wrapper — if any one venue's combined fetches/AI calls exceed 30s, abort it.
+      const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('venue-scan timeout')), PER_VENUE_TIMEOUT_MS));
+      await Promise.race([
+        (async () => {
       const signals = [];
 
       // ── Instagram scan ──────────────────────────────────────────
@@ -2588,9 +3689,10 @@ export async function runSignalScanner(env) {
               const igClassification = await classifySignal(env, venue.name, 'instagram', `${meta}\n${pageText.slice(0, 800)}`);
               if (igClassification && igClassification.score >= 6) {
                 signals.push({
-                  type: 'instagram',
+                  type: igClassification.signal_type || 'instagram',
                   score: igClassification.score,
                   summary: igClassification.summary,
+                  has_specific_date: igClassification.has_specific_date || false,
                   source: `instagram.com/${handle}`,
                   raw: meta.slice(0, 500),
                 });
@@ -2618,9 +3720,10 @@ export async function runSignalScanner(env) {
             const reviewClassification = await classifySignal(env, venue.name, 'reviews', text);
             if (reviewClassification && reviewClassification.score >= 6) {
               signals.push({
-                type: 'google_reviews',
+                type: reviewClassification.signal_type || 'google_reviews',
                 score: reviewClassification.score,
                 summary: reviewClassification.summary,
+                has_specific_date: reviewClassification.has_specific_date || false,
                 source: 'google.com/search',
                 raw: text.slice(0, 500),
               });
@@ -2669,15 +3772,27 @@ export async function runSignalScanner(env) {
             const webClassification = await classifySignal(env, venue.name, 'website', text);
             if (webClassification && webClassification.score >= 6) {
               signals.push({
-                type: 'website',
+                type: webClassification.signal_type || 'website',
                 score: webClassification.score,
                 summary: webClassification.summary,
+                has_specific_date: webClassification.has_specific_date || false,
                 source: venue.website,
                 raw: text.slice(0, 500),
               });
             }
           }
         } catch { /* Website fetch failed — skip */ }
+      }
+
+      // ── Quality gate: cap scores for undated event/seasonal signals ──
+      for (const sig of signals) {
+        if ((sig.type === 'event' || sig.type === 'seasonal') && !sig.has_specific_date) {
+          const originalScore = sig.score;
+          sig.score = Math.min(sig.score, 5); // cap at moderate
+          if (originalScore !== sig.score) {
+            console.log(`[Signal Scanner] Capped ${venue.name} ${sig.type} signal from ${originalScore} to ${sig.score} (no specific date)`);
+          }
+        }
       }
 
       // ── Save signals to D1 ─────────────────────────────────────
@@ -2709,49 +3824,68 @@ export async function runSignalScanner(env) {
       }
 
       await sleep(1000); // Rate limit between venues
+        })(),
+        timeoutP,
+      ]);
     } catch (err) {
-      console.error(`[Signal Scanner] Error scanning ${venue.name}:`, err.message);
+      const elapsed = Date.now() - vStart;
+      console.error(`[Signal Scanner] Error scanning ${venue.name} after ${elapsed}ms:`, err.message);
     }
   }
 
-  console.log(`[Signal Scanner] Done. Scanned ${scanned}, found ${signalsFound} signals`);
-  return { scanned, signals_found: signalsFound };
+  console.log(`[Signal Scanner] Done. Scanned ${scanned}/${loopCandidates.length} (cap=${SCAN_CAP}, total_ms=${Date.now() - scanStart}), found ${signalsFound} signals`);
+  return { scanned, signals_found: signalsFound, cap: SCAN_CAP, budget_ms: Date.now() - scanStart };
 }
 
 // ── Workers AI signal classifier (free, no Claude cost) ────────────────────
 async function classifySignal(env, venueName, source, content) {
   if (!env.AI) return null;
   try {
+    const today = new Date().toISOString().split('T')[0];
+    const currentMonth = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
     const prompt = `You are analyzing ${source} content for "${venueName}" to find timing signals for a food vendor outreach.
+
+TODAY'S DATE: ${today} (${currentMonth})
 
 CONTENT:
 ${content.slice(0, 800)}
 
-Look for these HIGH-VALUE timing signals (score 7-10):
-- New event announced (concert, festival, grand opening, seasonal opening)
-- Renovation or expansion completed
-- New food menu or "wish we had food" reviews
-- New GM, F&B director, or events manager hired
-- Seasonal opening (patio season, ski season, summer events)
-- "No food options" complaints in reviews
+CRITICAL TEMPORAL RULES:
+- Only score events as HIGH-VALUE (7+) if they are UPCOMING (within the next 60 days) or CURRENTLY HAPPENING
+- Past events = score 3 max. "Oktoberfest" in April is NOT a timing signal — it's 6 months away
+- Annual events mentioned generically without a specific upcoming date = score 4 max (could be evergreen website copy)
+- Permanent website content (about page, general menus, location info) = score 3 max
+- A summer concert series mentioned in April/May = valid upcoming signal
+- If NO specific dates are in the content, assume it is evergreen/permanent = score 4 max
+- "Already has food vendor/program" or "already serves pretzels/snacks" = score 1 (NOT a prospect)
+
+HIGH-VALUE timing signals (score 7-10) — ONLY if temporally valid:
+- New UPCOMING event announced (with date within 60 days)
+- Renovation or expansion just completed
+- New food menu launched or "wish we had food" reviews
+- New GM, F&B director, or events manager recently hired
+- Seasonal opening about to happen (patio season starting, summer events)
+- "No food options" complaints in recent reviews
 
 MODERATE signals (score 5-6):
 - General positive momentum (good reviews, growing)
-- Active social media posting about events
+- Active social media posting about upcoming events (but no specific dates)
 - Mentions of snacks, appetizers, or food vendors
 
 LOW/NO signal (score 1-4):
 - No relevant content found
 - Off-season or closing
 - Recent negative events
-- Already has food vendor/program
+- Already has a food vendor or food program
+- Evergreen website content with no temporal hook
 
 Return JSON only:
-{"score":7,"summary":"One sentence describing the timing signal and why now is a good time to reach out","signal_type":"event|renovation|food_gap|new_hire|seasonal|general"}`;
+{"score":7,"summary":"One sentence — what the signal is and why NOW is the right time","signal_type":"event|renovation|food_gap|new_hire|seasonal|general","has_specific_date":true}`;
 
     const resp = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
       messages: [
-        { role: 'system', content: 'You classify timing signals for sales outreach. Return valid JSON only, no markdown.' },
+        { role: 'system', content: `You classify timing signals for sales outreach. Today is ${today}. Return valid JSON only, no markdown. Be skeptical — most website content is evergreen and NOT a timing signal.` },
         { role: 'user', content: prompt },
       ],
       max_tokens: 200,

@@ -1,0 +1,145 @@
+Phase 33-B — JE Reversal Dependency Map
+Generated: 2026-05-20
+Purpose: For every Pretzel OS JE that affects YE2024 Schedule L OR builds on OB, identify action (REVERSE / KEEP / REPLACE / REVIEW). Downstream dependencies traced.
+
+# CATEGORY 1: OB-AFFECTING JEs DATED AT YE2024 — MUST REVERSE
+Reason: Current YE2024 OB diverges materially from filed 1065 (see SCHEDULE_L_AUDIT_v1.csv). Phase 33-C will post a single clean filed_1065_ob_v2 seed.
+
+source_type,je_id,entry_date,activity,action,reason
+qbo_opening_balance_seed,6e4b31cd-e41c-4c24-90c4-d1064e62b756,2024-12-31,964220.05,REVERSE,Original bookkeeper QBO seed from wrong intermediate date (2025-01-31). Seeds Mercury Checking $92617.86 (vs filed $35119); LEAF $104957 (vs filed $134855); Note Payable - D&L $770975 (vs filed: reclassified to equity); no Bridge BLOQ receivable (vs filed $123401); no Todd & Amanda note (vs filed $80000); 4 fixed asset categories misstated (Branding $44375 + Long-term office equip $909 not on filed return; F&F $15112 vs $2744; etc.)
+phase_29_ob_correction,29b-ob-correction-mercury,2024-12-31,80555.35,REVERSE,Correcting Mercury OB to actual bank — but sized against the wrong starting point ($92617 instead of correct $35119). New OB seed will set Mercury Checking directly to filed $35119 cent-accurate.
+depreciation_backfill,22f-accumdep-backfill-ye2024,2024-12-31,30073.50,REVERSE,Posted $60147 accum dep+amort to Retained Earnings. Filed Form 4562 supports $57784 dep + $2363 amort = $60147 exact. Will re-post via new OB seed (DR fixed assets / CR accum dep / no RE charge needed if OB doesn't include prior depreciation).
+fiscal_year_close,24-drew-lindsay-note-to-equity-reclass,2024-12-31,791950.00,REVERSE,Reclassed $791950 Note Payable - D&L to Partner Investments. Per Irene's filing (DEC F2): treatment was correct directionally but sized against wrong base ($791950 vs filed M-2 cash contributions $793176). New OB seed will set D&L equity directly to filed $593615 ending capital (= contributions $793176 + losses $199561 + M&E $813).
+fiscal_year_close,24c-payroll-payable-ob-drain-2024-12-31,2024-12-31,46869.65,REVERSE,Drained $46870 "phantom Payroll Payable" with CR Pre-Sync Adjustments. Per investigation: filed return shows YE2024 Payroll Payable = $856 (4-day Dec 28-31 accrual). The $46K was bookkeeper-post-filing inflation in QBO. Will re-seed at $856.
+
+# CATEGORY 2: PHASE 29-D MONTHLY MERCURY RECON JEs — MUST REVERSE
+Reason: All 22 JEs were sized against the wrong YE2024 OB. They oscillate v2/v3 to compensate. Per AC18 strict mercury_gl_matches_statement_monthly, the right mechanism is clean Mercury sync data + accurate OB — not adjustment JEs.
+
+source_type,je_id,entry_date,activity,action,reason
+phase_29_recon_adj,29d-recon-v3-2025-01-31,2025-01-31,1152.42,REVERSE,Wrong-OB-era monthly Mercury recon
+phase_29_recon_adj,29d-recon-v3-2025-02-28,2025-02-28,123400.74,REVERSE,Wrong-OB-era monthly Mercury recon
+phase_29_recon_adj,29d-recon-v3-2025-03-31,2025-03-31,76300.81,REVERSE,Wrong-OB-era monthly Mercury recon
+phase_29_recon_adj,29d-recon-v3-2025-04-30,2025-04-30,4061.42,REVERSE,Wrong-OB-era monthly Mercury recon
+phase_29_recon_adj,29d-recon-2025-05-31,2025-05-31,4811.12,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-05-31,2025-05-31,22899.24,REVERSE,Wrong-OB-era (v3 fix to v2) monthly recon
+phase_29_recon_adj,29d-recon-2025-06-30,2025-06-30,10307.30,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-06-30,2025-06-30,10307.30,REVERSE,Wrong-OB-era (v3 reverses v2) monthly recon
+phase_29_recon_adj,29d-recon-2025-07-31,2025-07-31,13562.81,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-07-31,2025-07-31,13562.81,REVERSE,Wrong-OB-era (v3 reverses v2) monthly recon
+phase_29_recon_adj,29d-recon-2025-08-31,2025-08-31,11536.66,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-08-31,2025-08-31,11536.66,REVERSE,Wrong-OB-era (v3 reverses v2) monthly recon
+phase_29_recon_adj,29d-recon-2025-09-30,2025-09-30,12077.38,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-09-30,2025-09-30,15987.76,REVERSE,Wrong-OB-era (v3 partial fix) monthly recon
+phase_29_recon_adj,29d-recon-2025-10-31,2025-10-31,9230.41,REVERSE,Wrong-OB-era (v2) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-10-31,2025-10-31,9187.17,REVERSE,Wrong-OB-era (v3 partial fix) monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-11-30,2025-11-30,270.00,REVERSE,Wrong-OB-era monthly recon
+phase_29_recon_adj,29d-recon-v3-2025-12-31,2025-12-31,1990.74,REVERSE,Wrong-OB-era monthly recon
+phase_29_recon_adj,29d-recon-v3-2026-01-31,2026-01-31,6428.15,REVERSE,Wrong-OB-era monthly recon
+phase_29_recon_adj,29d-recon-v3-2026-02-28,2026-02-28,6104.00,REVERSE,Wrong-OB-era monthly recon
+phase_29_recon_adj,29d-recon-v3-2026-03-31,2026-03-31,13642.05,REVERSE,Wrong-OB-era monthly recon
+phase_29_recon_adj,29d-recon-v3-2026-04-30,2026-04-30,13873.09,REVERSE,Wrong-OB-era monthly recon
+mercury_recon_adj,31a5-mercury-ye2025-recon,2025-12-31,3910.38,REVERSE,Phase 31-A5 residual Mercury YE2025 fix. With clean OB and re-run reconstructions, this won't be needed.
+
+# CATEGORY 3: PLUG ACCOUNTS — MUST REVERSE TO COMPLY WITH AC15/AC16/AC17
+Reason: Pre-Sync Adjustments, Pre-Pretzel-OS Reconciliation, YE2024 Bank Reconciliation Adjustment must all be $0 balance after Phase 33.
+
+source_type,je_id,entry_date,activity,action,reason
+pre_sync_adjustment,(9 JEs see detail),various 2025,210506.79,REVERSE ALL 9,Plug-account JEs that absorbed OB-correction differences. Must drain to $0 per AC15.
+reclass_to_equity,24g-ppr-to-equity-reclass-v2,2026-05-16,31811.74,REVERSE,Phase 24-G reclassified Pre-Pretzel-OS Reconciliation residual to equity — plug operation no longer needed with clean OB.
+cleanup_reclass,24-phase-d-negative-expense-cleanup,2026-05-18,7577.56,REVERSE,Phase D cleanup of negative expense balances — symptom of wrong OB; not needed after clean rebuild.
+
+# CATEGORY 4: BRIDGE BLOQ + T&A — DEPENDS ON DREW CLARIFICATION
+
+source_type,je_id,entry_date,activity,action,reason
+fiscal_year_close,24-bridge-bloq-section-110,2025-02-24,123400.74,REVERSE AND REPLACE,Currently posts CR Leasehold Improvements $123401 / DR Pre-Sync $123401 as Section 110. But filed Form 4562 shows NO basis reduction. The $123401 sits on YE2024 BS as Reimbursement Receivable. Drew/Irene must clarify Section 110 timing — replacement JE depends on answer. PENDING DREW Q1.
+fiscal_year_close,24-partner-exit-settlement-2025-03-03,2025-03-03,80000.00,REVERSE AND REPLACE,Currently posts DR Partner Investments:D&L $80000 / CR Pre-Sync $80000 as "partner-exit settlement". But filed return shows T&A as creditor only with $80000 Settlement Payable. Replacement JE: DR Settlement Payable - T&A $80000 / CR Mercury Checking $80000 dated to actual Mercury outflow. PENDING DREW Q2 (which Mercury outflow — Feb 13 Chase or Mar 3 Wells Fargo).
+
+# CATEGORY 5: FY2025 FISCAL YEAR CLOSE JEs — REVERSE + RE-DERIVE
+Reason: All 8 FY2025-close JEs derive from P&L. After OB reset and reconstruction re-run, FY2025 P&L will change. Must reverse and re-derive after all upstream rebuilds.
+
+source_type,je_id,entry_date,activity,action,reason
+fiscal_year_close,21v-audit5-fy2025-close,2025-12-31,(P&L close),REVERSE AND RE-DERIVE,FY2025 close — must redo after rebuilds
+fiscal_year_close,22f-fy2025-supplemental-close,2025-12-31,(supplemental),REVERSE AND RE-DERIVE,Phase 22-F supplemental — must redo
+fiscal_year_close,24tap-v3-mio-2025-fy-tax-paid,2025-12-31,(tax paid drain),REVERSE AND RE-DERIVE,Session 24-tap Mercury IO Utah sales tax drain
+fiscal_year_close,24-utahpaper-reclass-2025-fy,2025-12-31,(UTAH PAPER reclass),REVERSE AND RE-DERIVE,UTAH PAPER AMA → COGS reclass
+fiscal_year_close,26b-fy2025-close-mirror,2025-12-31,(channel adj mirror),REVERSE AND RE-DERIVE,Phase 26-B Channel Adjustments close mirror
+fiscal_year_close,089j-supplemental-fy2025-close-v4,2025-12-31,(LEAF supplemental),REVERSE AND RE-DERIVE,Phase 30 LEAF supplemental close
+fiscal_year_close,31a3-taxes-paid-close-correction,2025-12-31,(taxes paid correction),REVERSE AND RE-DERIVE,Phase 31-A3 close correction
+fiscal_year_close,31a2-ama-drain-close-correction,2025-12-31,(AMA correction),REVERSE AND RE-DERIVE,Phase 31-A2 close correction
+
+# CATEGORY 6: LEAF RECONSTRUCTION — MUST RE-RUN WITH CORRECT OB
+Reason: leaf_amortization_reconstruction built on WRONG OB ($104957 vs filed $134855). Re-running with correct OB will shift FY2025 LEAF interest expense.
+
+source_type,je_id,entry_date,activity,action,reason
+leaf_amortization_reconstruction,(64 JEs across FY2025-FY2026 LEAF months),2025-01 to 2026-04,18761.35,REVERSE ALL 64 AND RE-RUN,Re-run with correct YE2024 LEAF starting balances (Pizza Ovens $60393.34 + Kemper $25939.18 + Comm Kitchen-2 $26087.91 + Commercial Kitchen Supply $22434.01) and verified 9.49-9.50% APR per lease PDFs.
+
+# CATEGORY 7: SALES TAX RECLASS — REVIEW AGAINST NEW OB
+Reason: 6 sales_tax_reclass JEs ($23872 activity) reclassed Mercury Utah801 outflows. New OB Sales Tax Payable = $1454 (vs prior treatment may have assumed different). Verify each JE still applies correctly.
+
+source_type,je_id,entry_date,activity,action,reason
+sales_tax_reclass,(6 JEs),various,23872.51,REVIEW,Verify each reclass against new YE2024 Sales Tax Payable $1454 OB. May need re-derivation.
+
+# CATEGORY 8: KEEP AS-IS (independent of OB or source-of-truth verified)
+
+source_type,count,activity,action,reason
+mercury_txn,1825,1071539.91,KEEP,Mercury bank sync source-of-truth. Indexes raw Mercury transactions cent-accurate.
+mercury_io_statement_txn,509,65130.22,KEEP,Chase Ink (Mercury IO) statement ingest source-of-truth.
+phase_30_dp_cash_leg,40,59165.39,KEEP,40 Dangerous Pretze internal payroll-funding transfers — Pattern B clearing path. Independent of OB.
+toast_payroll_reconstruction,60,13712.03,KEEP,Toast Payroll source-of-truth (from toast_payroll_gl). Independent of OB. Verify cent-accuracy against source post-Phase-33.
+toast_sales_summary_reconstruction,2,2777.36,KEEP,Toast POS source-of-truth (Toast Sales Summary). Verify cent-accuracy.
+square_pos_reconstruction,2,1160.44,KEEP,Square POS source-of-truth. Verify cent-accuracy.
+bookkeeper_tips_tax_accrual,12,36211.33,KEEP,Monthly tips/sales-tax accruals derived from POS data. Independent of OB.
+monthly_depreciation,24,78549.52,KEEP,Phase 22-F monthly depreciation FY2025+ per Form 4562 schedule. Verify against schedule post-Phase-33.
+partner_contribution (Sprinter),1,100000.00,KEEP,22f-sprinter-contribution-2025 — Jan 15 2025 Sprinter Van $200K capital contribution by Drew & Lindsay. Real 2025 event. KEEP. (Note: activity shown $100K is per-partner; total Sprinter contribution = $200K.)
+sec179_depreciation (Sprinter),1,100000.00,REVIEW,22f-sprinter-sec179-2025 — Jan 15 2025 Sprinter Section 179 $200K full first-year election. Tax-only election; the 2025 1065 isn't filed yet. Drew + Irene to confirm 2025 Section 179 election. CONDITIONAL KEEP.
+
+# CATEGORY 9: SURVIVING qbo_je_ingest (5 JEs)
+Reason: After Phase 30 reversed 234 payroll-related qbo_je_ingest JEs, 5 remain (non-payroll bookkeeper JEs that were KEPT per Drew's narrowed scope).
+
+source_type,je_count,activity,action,reason
+qbo_je_ingest,5,22183.40,REVIEW,These are surviving non-payroll bookkeeper QBO JEs (SLCB adjustments, etc.). Need to re-verify with new OB. List of 5 IDs in Phase 33-B follow-up.
+
+---
+
+SUMMARY OF REVERSAL ACTIONS:
+
+Tier 1 — REVERSE (foundational): 27 JEs touching YE2024 OB or affecting it
+  - 5 JEs dated at 2024-12-31 (Tier 1 of Category 1)
+  - 22 phase_29_recon_adj JEs (Category 2)
+  - 1 mercury_recon_adj JE (Category 2)
+  - 9 pre_sync_adjustment JEs (Category 3)
+  - 2 reclass JEs (Category 3)
+  - 2 mid-2025 fiscal_year_close JEs (Category 4 — Bridge BLOQ + T&A)
+  - 8 FY2025-close JEs (Category 5)
+  - 64 leaf_amortization_reconstruction JEs (Category 6)
+  - 6 sales_tax_reclass JEs (Category 7 — review)
+
+TOTAL JEs TO REVERSE: ~119 JEs
+
+Tier 2 — KEEP: ~2470 JEs (Mercury sync, Chase Ink ingest, Toast Payroll recon, Square recon, etc.)
+
+Tier 3 — REPLACE: Phase 33-C will post 1 atomic OB seed JE replacing all the OB-affecting reversals.
+
+DEPENDENCY ORDER (must execute in this sequence):
+1. Reverse all Category 1-7 JEs (atomic migration 094)
+2. Post new clean YE2024 OB JE from filed 1065 (migration 095)
+3. Re-run leaf_amortization_reconstruction with correct OB (Phase 33-D)
+4. Verify toast_payroll_reconstruction still cent-accurate (Phase 33-E — should be unchanged)
+5. Post Bridge BLOQ Section 110 + receivable clearing per Drew Q1 answer (Phase 33-F)
+6. Post T&A Settlement Payable clearing per Drew Q2 answer (Phase 33-G)
+7. Re-run sales_tax_reclass with verified targets (Phase 33-H)
+8. Build equity bridge (Phase 33-I)
+9. Verify FY2025 P&L line-by-line from source data (Phase 33-J)
+10. Resolve Mercury GL strict-match (Phase 33-K)
+11. Generate v5 package (Phase 33-L)
+12. Acceptance tests + Tier 1 invariants (Phase 33-M)
+13. Final validation + sign-off (Phase 33-N)
+
+OPEN QUESTIONS BLOCKING EXECUTION (waiting on Drew):
+Q1 (Phase 33-F): Bridge BLOQ Section 110 — was the election made on filed 2024 return? (Form 4562 suggests no — but Statement 5 has Reimbursement Receivable $123401, suggesting deferred treatment.) Determines whether Feb 2025 cash receipt is: (a) CR Mercury / DR AR (simple clearing), (b) DR AR / CR Leasehold (Section 110 applied now), or (c) other.
+Q2 (Phase 33-G): T&A $80K Final Settlement Payment — which Mercury outflow? Feb 13 $80K Chase ••7262 or Mar 3 $80K Wells Fargo ••6788?
+Q3 (Phase 33-A doc): $167 Mercury Credit variance — accept or chase?
+Q4 (Phase 33-A doc): N/P Toast — accept bookkeeper value or attempt to pull Toast equipment financing agreement?
+Q5 (Phase 33-I): D&L $793176 capital contributions — source-verify from Mercury Aug 2023 - Dec 2024 statements, or accept filed M-2?
+Q6 (Phase 33-K): Mercury GL strict-match Option A or B — per DEC8 Drew already said "yes and yes" (Option A — strict match every month-end). Confirm.
+Q7 (Phase 33 misc): Sprinter Section 179 — confirm 2025 election is still Drew + Irene's intended treatment.

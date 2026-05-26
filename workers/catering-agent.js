@@ -24,10 +24,149 @@
 import { getDirectiveFromKV } from './cfo-agent.js';
 import { loadBrain } from './brain-loader.js';
 import { sendApprovalRequestEmail } from './approval-mailer.js';
+import { callAI } from './ai-budget.js';
 
-const MAX_SENDS_PER_RUN   = 5;      // Catering has larger TAM than wholesale
+const MAX_SENDS_PER_RUN   = 7;      // Catering has larger TAM than wholesale — 7/run x 3 runs/week = 21/week target
 const APPROVAL_GATE_COUNT = 50;     // Park for Drew approval (window-based — resets every 30 days)
 const DRAFT_QUALITY_MIN   = 7;      // Min self-score to send
+
+// ── PROGRAMMATIC QUALITY GATES ────────────────────────────────────────────────
+const BANNED_PATTERNS = [
+  /I hope this finds you well/i,
+  /I wanted to reach out/i,
+  /I am writing to/i,
+  /exciting opportunity/i,
+  /exciting partnership/i,
+  /touch base/i,
+  /synergies?/i,
+  /value proposition/i,
+  /please don't hesitate/i,
+  /please don.t hesitate/i,
+  /looking forward to hearing from you/i,
+  /in today.s competitive/i,
+  /as a \w+ you understand/i,
+  /innovative\s+(solution|approach|partnership)/i,
+  /leverage\s+(our|this|the)/i,
+  /free taster box/i,
+  /flavors?\s+include/i,
+  /warmer model/i,
+  /one warmer,? one night/i,
+  /trial run/i,
+];
+
+function checkBannedPhrases(subject, body) {
+  const text = `${subject}\n${body}`;
+  const found = [];
+  for (const p of BANNED_PATTERNS) {
+    const match = text.match(p);
+    if (match) found.push(match[0]);
+  }
+  return found;
+}
+
+// Max 25 words per sentence — enforced programmatically
+function checkSentenceLength(body) {
+  const sigIdx = body.indexOf('--\n');
+  const mainBody = sigIdx > -1 ? body.slice(0, sigIdx) : body;
+  const sentences = mainBody.split(/[.!?]\s+/).filter(s => s.trim().length > 0);
+  return sentences.filter(s => s.split(/\s+/).length > 25);
+}
+
+// Independent Claude Haiku review — catches hallucinations + voice issues
+async function validateCateringEmail(subject, body, lead, researchData, env) {
+  const issues = [];
+
+  // Layer 1: Programmatic checks
+  const banned = checkBannedPhrases(subject, body);
+  if (banned.length > 0) issues.push(`Banned phrases: ${banned.join(', ')}`);
+
+  const longSentences = checkSentenceLength(body);
+  if (longSentences.length > 0) issues.push(`${longSentences.length} sentence(s) over 25 words`);
+
+  if (!body.includes('Drew') || !body.includes('801')) {
+    issues.push('Missing or incomplete signature (need name + phone)');
+  }
+
+  // Layer 2: Claude Haiku review
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const currentMonth = new Date().toLocaleString('en-US', { month: 'long' });
+
+    const reviewPrompt = `You are a quality reviewer for catering outreach emails sent by Dangerous Pretzel Co (a Salt Lake City soft pretzel brand targeting corporate offices for catering).
+
+Today's date: ${today} (${currentMonth})
+
+LEAD CONTEXT:
+Company: ${lead.name || 'unknown'}
+Industry: ${lead.industry || 'unknown'}
+City: ${lead.city || 'SLC'}
+Headcount: ${lead.headcount || lead.company_size || 'unknown'}
+Notes: ${(lead.notes || '').slice(0, 500)}
+
+RESEARCH DATA AVAILABLE TO THE DRAFTER:
+${(researchData || 'No research data recorded').slice(0, 800)}
+
+DRAFT EMAIL:
+Subject: ${subject}
+Body:
+${body}
+
+Review for these specific issues. Return JSON only:
+
+1. HALLUCINATION CHECK: Does the email reference any facts, events, or details NOT present in the lead context or research data?
+   - Mentioning specific company events with no evidence
+   - Claiming company size or culture details not in research
+   - Referencing team names, office locations, or specifics not in data
+
+2. TEMPORAL CHECK: Are seasonal/event references actually current for ${currentMonth}?
+   - "Holiday party season" in April = FAIL
+   - "Q2 kickoff" in April = OK
+   - "Summer team events" in April = OK (upcoming)
+
+3. VOICE CHECK: Does it sound like a local small business owner, or a corporate sales rep?
+   - Buzzwords, pitch-deck language, or formal sales tone = FAIL
+   - Should be casual, friendly, brief — like texting a friend who might want pretzels for their team
+
+4. OFFER FIT: Is the pitch appropriate for catering?
+   - Don't mention warmers or bar programs (that's wholesale)
+   - Focus on team lunches, events, office snacks
+
+Return ONLY this JSON:
+{"pass": true/false, "issues": ["issue1", "issue2"], "suggestion": "one-line fix if minor, null if major rewrite needed"}`;
+
+    // DIF-3 (May 13 2026): wired through ai-budget
+    const reviewResult = await callAI(env, {
+      use_case: 'catering_email_validation',
+      model: 'haiku',
+      max_tokens: 300,
+      messages: [{ role: 'user', content: reviewPrompt }],
+      caller: 'catering-agent.js',
+    });
+    if (!reviewResult.ok) throw new Error(reviewResult.error || reviewResult.blocked_reason || 'callAI failed');
+    const reviewText = reviewResult.content || '';
+    const clean = reviewText.replace(/```json\n?|\n?```/g, '').trim();
+    const review = JSON.parse(clean);
+
+    if (!review.pass && review.issues) {
+      issues.push(...review.issues);
+    }
+
+    return {
+      pass: issues.length === 0,
+      issues,
+      suggestion: review.suggestion || null,
+      review_source: 'haiku',
+    };
+  } catch (err) {
+    console.error(`[Catering] Validation review error: ${err.message}`);
+    return {
+      pass: issues.length === 0,
+      issues,
+      suggestion: null,
+      review_source: 'programmatic_only',
+    };
+  }
+}
 const MAX_AGENT_LOOPS     = 8;
 // DEPLOY_DATE read from env.DEPLOY_DATE (wrangler.toml)
 
@@ -263,12 +402,34 @@ Good: "Hi [Name] — I run Dangerous Pretzel Co here in SLC, and I think your te
 Bad: "The Spicy Bee with hot honey at your all-hands will get more Slack messages than the CEO's speech. Free taster box. 6 pretzels. Your team decides."
 
 Good (subject): "pretzels for [Company]?" or "quick question about [Company] events"
-Bad (subject): "[Company]'s Q2 kickoff deserves better than a sad sandwich platter"`;
+Bad (subject): "[Company]'s Q2 kickoff deserves better than a sad sandwich platter"
+
+HARD RULES — drafts that violate these are auto-rejected and must be rewritten:
+1. NO sentence over 25 words. Count words per sentence before you commit. Break long ones with a period or em-dash.
+2. EVERY email MUST end with a signature including BOTH "Drew" (name) AND "801" (phone area code). Format:
+   --
+   Drew
+   Dangerous Pretzel Co
+   801-XXX-XXXX
+3. NO banned opener phrases: "I wanted to reach out", "I hope this email finds you well", "circle back", "touch base", "just wanted to check in", "synergies", "value proposition", "looking forward to hearing from you", "free taster box", "flavors include".
+4. NO bullet lists. Write in short prose sentences.
+5. 3-4 sentences max in the body. Anything longer gets cut before it gets read.
+
+If send_or_park_email returns action:'held' with a gate-failure reason, REWRITE the draft fixing the specific issue, then call send_or_park_email again. You have up to 8 loops per lead.`;
 
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runCateringAgent(env));
+    // Direct sanity ping — proves scheduled() actually fires, independent of trackedRun
+    try {
+      await env.DB.prepare(
+        `INSERT INTO cron_runs (id, agent, cron, status, started_at, summary) VALUES (?, 'catering_ping', ?, 'completed', datetime('now'), 'scheduled() entered')`
+      ).bind(crypto.randomUUID(), event?.cron || 'unknown').run();
+    } catch (e) {
+      console.error('[Catering] scheduled-ping INSERT failed:', e.message);
+    }
+    console.log(`[Catering] scheduled() fired at ${new Date().toISOString()} cron=${event?.cron}`);
+    return runCateringAgent(env);
   },
 
   async fetch(request, env, ctx) {
@@ -281,17 +442,19 @@ export default {
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    // Sync /catering/preview + /catering/draft-and-park REMOVED — exceeded 60s fetch
+    // timeout on complex leads. Use the -async variants below + /catering/single-run/{job_id}.
     if (path === '/catering/preview' && request.method === 'POST') {
-      const body = await request.json();
-      const lead = await env.DB.prepare(
-        'SELECT * FROM catering_leads WHERE id = ?'
-      ).bind(body.lead_id).first();
-      if (!lead) return new Response('Lead not found', { status: 404 });
-      const brainCtx = await loadBrain(env, 'catering');
-      const result = await runAgentForLead(lead, env, true, brainCtx);
-      return new Response(JSON.stringify(result, null, 2), {
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(JSON.stringify({
+        error: 'removed',
+        message: 'Use POST /catering/preview-async → GET /catering/single-run/{job_id}',
+      }), { status: 410, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (path === '/catering/draft-and-park' && request.method === 'POST') {
+      return new Response(JSON.stringify({
+        error: 'removed',
+        message: 'Use POST /catering/draft-and-park-async → GET /catering/single-run/{job_id}',
+      }), { status: 410, headers: { 'Content-Type': 'application/json' } });
     }
     if (path === '/catering/pending') {
       return getPendingApprovals(env);
@@ -316,6 +479,180 @@ export default {
       const result = await redraftCateringPending(env, feedback);
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     }
+
+    // Pipeline Kanban feed — all catering leads with status for the board
+    if (path === '/catering/leads-pipeline') {
+      const rows = await env.DB.prepare(`
+        SELECT id, name, city, status, contact_name, contact_email, contact_title,
+               CAST(julianday('now') - julianday(COALESCE(updated_at, created_at)) AS INTEGER) as days_in_stage
+        FROM catering_leads
+        WHERE status NOT IN ('closed', 'lost')
+        ORDER BY
+          CASE status WHEN 'active' THEN 0 WHEN 'replied' THEN 1 WHEN 'contacted' THEN 2 ELSE 3 END,
+          name ASC
+      `).all();
+      return new Response(JSON.stringify(rows.results || []), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Full lead detail + email history (catering cockpit)
+    if (path.match(/^\/catering\/lead-detail\//) && request.method === 'GET') {
+      const leadId = path.split('/catering/lead-detail/')[1];
+      const lead = await env.DB.prepare('SELECT * FROM catering_leads WHERE id = ?').bind(leadId).first();
+      if (!lead) return new Response(JSON.stringify({ error: 'Not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      const { results: logs } = await env.DB.prepare(
+        `SELECT * FROM outreach_logs WHERE venue_id = ? ORDER BY created_at DESC`
+      ).bind(leadId).all().catch(() => ({ results: [] }));
+      return new Response(JSON.stringify({ lead, outreach_logs: logs || [] }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Save notes on a catering lead
+    if (path === '/catering/save-notes' && request.method === 'POST') {
+      const body = await request.json();
+      if (!body.lead_id) return new Response(JSON.stringify({ error: 'lead_id required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      await env.DB.prepare(
+        `UPDATE catering_leads SET notes = ?, updated_at = datetime('now') WHERE id = ?`
+      ).bind(body.notes || '', body.lead_id).run();
+      return new Response(JSON.stringify({ saved: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Async single-lead agent run — mirrors /outreach/preview-async pattern
+    if ((path === '/catering/preview-async' || path === '/catering/draft-and-park-async') && request.method === 'POST') {
+      const body = await request.json();
+      const mode = path.includes('draft-and-park') ? 'park' : 'preview';
+      const lead = await env.DB.prepare('SELECT * FROM catering_leads WHERE id = ?').bind(body.lead_id).first();
+      if (!lead) return new Response(JSON.stringify({ error: 'Lead not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      const jobId = crypto.randomUUID();
+      const kvKey = `cat_single_run:${jobId}`;
+      await env.KV.put(kvKey, JSON.stringify({ status: 'running', lead_id: lead.id, mode, started: new Date().toISOString() }), { expirationTtl: 3600 });
+      const forcedStep = body.step ? parseInt(body.step) : null;
+      if (forcedStep) {
+        lead._forced_step = forcedStep;
+        lead._followup_step = forcedStep;
+        if (forcedStep > 1) {
+          const prior = await env.DB.prepare(
+            `SELECT subject, body, sent_at, sequence_step FROM outreach_logs
+             WHERE venue_id = ? AND direction = 'out' AND sent_at IS NOT NULL
+             ORDER BY sequence_step DESC, sent_at DESC LIMIT 1`
+          ).bind(lead.id).first().catch(() => null);
+          if (prior) {
+            lead._prior_subject = prior.subject;
+            lead._prior_body = prior.body;
+            lead._prior_sent_at = prior.sent_at;
+          }
+        }
+      }
+      ctx.waitUntil((async () => {
+        const t0 = Date.now();
+        try {
+          const brainCtx = await loadBrain(env, 'catering');
+          const result = await runAgentForLead(lead, env, mode === 'preview', brainCtx);
+          await env.KV.put(kvKey, JSON.stringify({ status: 'done', lead_id: lead.id, mode, result, duration_ms: Date.now() - t0 }), { expirationTtl: 3600 });
+        } catch (err) {
+          await env.KV.put(kvKey, JSON.stringify({ status: 'error', lead_id: lead.id, mode, error: err.message, duration_ms: Date.now() - t0 }), { expirationTtl: 3600 });
+        }
+      })());
+      return new Response(JSON.stringify({ job_id: jobId, status: 'running' }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Poll catering single-lead run
+    if (path.startsWith('/catering/single-run/') && request.method === 'GET') {
+      const jobId = path.split('/catering/single-run/')[1];
+      const data = await env.KV.get(`cat_single_run:${jobId}`);
+      return new Response(data || '{"status":"unknown"}', { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Add a single manual catering lead (from Add Lead modal, catering funnel)
+    if (path === '/catering/add-lead' && request.method === 'POST') {
+      const body = await request.json();
+      const name = (body.name || '').trim();
+      if (!name) return new Response(JSON.stringify({ error: 'name required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      const leadId = crypto.randomUUID();
+      try {
+        await env.DB.prepare(`
+          INSERT INTO catering_leads (
+            id, name, city, contact_email, website,
+            source, status, notes, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'manual', 'prospect', ?, datetime('now'), datetime('now'))
+        `).bind(
+          leadId, name, body.city || '', body.contact_email || null, body.website || null,
+          body.notes || null
+        ).run();
+      } catch (e) {
+        return new Response(JSON.stringify({ error: 'insert failed: ' + e.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ lead_id: leadId, created: true }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // On-demand catering Apollo search (parity with /outreach/find-leads)
+    if (path === '/catering/find-leads' && request.method === 'POST') {
+      const body = await request.json();
+      const q = (body.query || '').trim();
+      if (!q) return new Response(JSON.stringify({ leads: [], message: 'empty query' }), { headers: { 'Content-Type': 'application/json' } });
+      try {
+        const apolloRes = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Api-Key': env.APOLLO_API_KEY },
+          body: JSON.stringify({
+            person_titles: ['Office Manager', 'Executive Assistant', 'People Operations', 'HR Manager', 'Events Coordinator'],
+            person_locations: ['Utah, United States'],
+            q_keywords: q,
+            organization_num_employees_ranges: ['51,200', '201,500'],
+            page: 1, per_page: 15,
+          }),
+        });
+        const data = await apolloRes.json();
+        const people = data.people || [];
+        const existing = await env.DB.prepare('SELECT name, contact_email FROM catering_leads').all().catch(() => ({ results: [] }));
+        const existingNames = new Set((existing.results || []).map(r => (r.name || '').toLowerCase()));
+        const existingEmails = new Set((existing.results || []).map(r => (r.contact_email || '').toLowerCase()));
+        const leads = people.map(p => {
+          const org = p.organization || {};
+          const inPipeline = existingNames.has((org.name || '').toLowerCase()) || existingEmails.has((p.email || '').toLowerCase());
+          return {
+            name: org.name || '(unknown)',
+            city: org.primary_city || '',
+            contact_name: [p.first_name, p.last_name].filter(Boolean).join(' '),
+            contact_email: p.email || '',
+            contact_title: p.title || '',
+            website: org.website_url || '',
+            category: 'tech',
+            already_in_pipeline: inPipeline,
+          };
+        });
+        return new Response(JSON.stringify({ leads }), { headers: { 'Content-Type': 'application/json' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message, leads: [] }), { headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    // Status update for catering leads (drag-drop from Kanban)
+    if (path === '/catering/status' && request.method === 'POST') {
+      const body = await request.json();
+      const { lead_id, status, notes } = body;
+      const valid = ['prospect', 'researching', 'qualified', 'contacted', 'replied', 'trial', 'active', 'inactive', 'hold', 'drew_flag', 'unsubscribed'];
+      if (!lead_id || !valid.includes(status)) {
+        return new Response(JSON.stringify({ error: 'Invalid lead_id or status' }), { status: 400 });
+      }
+      if (notes) {
+        // Append note with timestamp so the trail is preserved
+        await env.DB.prepare(
+          `UPDATE catering_leads SET status = ?,
+             notes = COALESCE(notes || char(10), '') || ? ,
+             updated_at = datetime('now')
+           WHERE id = ?`
+        ).bind(status, `[${new Date().toISOString().slice(0,10)} status→${status}] ${notes}`, lead_id).run();
+      } else {
+        await env.DB.prepare(
+          `UPDATE catering_leads SET status = ?, updated_at = datetime('now') WHERE id = ?`
+        ).bind(status, lead_id).run();
+      }
+      return new Response(JSON.stringify({ updated: true, lead_id, status }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     return new Response('Catering Agent', { status: 200 });
   }
 };
@@ -433,7 +770,49 @@ async function runCateringAgent(env) {
 }
 
 // ── AGENT LOOP FOR ONE LEAD ───────────────────────────────────────────────────
+// Phase D helper: park an operator-authored catering draft verbatim.
+async function _persistOperatorCateringDraft(lead, env, { subject, body, step_n }) {
+  const logId = crypto.randomUUID();
+  await env.DB.prepare(`
+    INSERT INTO outreach_logs (
+      id, venue_id, direction, sequence_step, subject, body,
+      approval_status, self_score, created_at
+    ) VALUES (?, ?, 'out', ?, ?, ?, 'pending', 10, datetime('now'))
+  `).bind(logId, lead.id, step_n, subject, body).run();
+  return {
+    action: 'parked',
+    parked: true,
+    log_id: logId,
+    subject, body, selfScore: 10,
+    reasoning: `Operator-authored catering draft for step ${step_n} parked for approval.`,
+  };
+}
 async function runAgentForLead(lead, env, dryRun = false, brainContext = '') {
+  // Phase D: check for per-step override BEFORE drafting
+  const stepForOverride = lead._followup_step || lead._forced_step || 1;
+  const override = await env.DB.prepare(
+    `SELECT skip, custom_subject, custom_body, custom_send_at FROM lead_overrides
+     WHERE lead_id = ? AND funnel = 'catering' AND step_n = ?`
+  ).bind(lead.id, stepForOverride).first().catch(() => null);
+  if (override?.skip) {
+    return { action: 'skipped', reasoning: `Step ${stepForOverride} explicitly skipped by operator override.` };
+  }
+  if (override?.custom_send_at) {
+    const target = new Date(override.custom_send_at);
+    if (target > new Date()) {
+      return { action: 'skipped', reasoning: `Step ${stepForOverride} rescheduled to ${override.custom_send_at}. Not yet due.` };
+    }
+  }
+  if (override?.custom_body && !dryRun) {
+    try {
+      return await _persistOperatorCateringDraft(lead, env, {
+        subject: override.custom_subject || `${lead.name} + pretzels?`,
+        body: override.custom_body,
+        step_n: stepForOverride,
+      });
+    } catch (e) { console.error('[catering overrides] persist failed:', e.message); }
+  }
+
   const messages = [
     {
       role: 'user',
@@ -474,7 +853,7 @@ IMPORTANT: If contact_email is null or missing, call find_catering_contact befor
     loops++;
 
     const response = await callClaudeWithTools(
-      env.ANTHROPIC_API_KEY,
+      env,
       CATERING_SYSTEM_PROMPT + '\n\n' + brainContext,
       messages
     );
@@ -495,7 +874,15 @@ IMPORTANT: If contact_email is null or missing, call find_catering_contact befor
         const result = await executeTool(toolUse.name, toolUse.input, lead, env, dryRun);
         toolResults.push({ tool: toolUse.name, input: toolUse.input, result });
 
-        if (toolUse.name === 'send_or_park_email' && result.action) finalDecision = result;
+        // Terminal outcomes from send_or_park_email: actually sent/parked/skipped.
+        // A programmatic-gate 'held' from send_or_park_email is NOT terminal — the
+        // draft failed QC (banned phrase, long sentence, bad signature). Return the
+        // failure to the agent as a tool_result so it can rewrite and retry within
+        // MAX_AGENT_LOOPS. A true "hold this company for X days" still terminates
+        // via the hold_prospect tool.
+        if (toolUse.name === 'send_or_park_email' && result.action && result.action !== 'held') {
+          finalDecision = result;
+        }
         if (toolUse.name === 'hold_prospect') finalDecision = { action: 'held', ...result };
         if (toolUse.name === 'flag_for_drew') finalDecision = { action: 'flagged', ...result };
 
@@ -848,23 +1235,19 @@ Return JSON:
   "rewritten": false
 }`;
 
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 800,
-          system: CATERING_SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: prompt }],
-        }),
+      // DIF-3 (May 13 2026): wired through ai-budget
+      const r = await callAI(env, {
+        use_case: 'catering_email_draft',
+        model: 'sonnet',
+        max_tokens: 800,
+        system: CATERING_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+        caller: 'catering-agent.js',
       });
-
-      const data = await r.json();
-      const text = data.content?.[0]?.text || '';
+      if (!r.ok) {
+        return { error: 'Draft parse failed', raw: (r.error || r.blocked_reason || '').slice(0, 300) };
+      }
+      const text = r.content || '';
       try {
         return JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
       } catch {
@@ -877,6 +1260,44 @@ Return JSON:
 
       if (input.self_score < DRAFT_QUALITY_MIN) {
         return { action: 'held', reason: `Score ${input.self_score} below minimum ${DRAFT_QUALITY_MIN}` };
+      }
+
+      // ── PROGRAMMATIC QUALITY GATES (cannot be bypassed by self-scoring) ──
+
+      // Banned phrase check
+      const bannedFound = checkBannedPhrases(input.subject || '', input.body || '');
+      if (bannedFound.length > 0) {
+        return {
+          action: 'held',
+          reason: `Draft contains banned phrases: ${bannedFound.join(', ')}. Must rewrite.`,
+          banned_phrases: bannedFound,
+        };
+      }
+
+      // Sentence length check (max 25 words)
+      const longSentences = checkSentenceLength(input.body || '');
+      if (longSentences.length > 0) {
+        return {
+          action: 'held',
+          reason: `Draft has ${longSentences.length} sentence(s) over 25 words. Shorten and rewrite.`,
+          long_sentences: longSentences.map(s => s.slice(0, 80) + '...'),
+        };
+      }
+
+      // ── INDEPENDENT VALIDATION (Claude Haiku review — catches hallucinations) ──
+      const validation = await validateCateringEmail(
+        input.subject, input.body, lead,
+        input.reasoning || '',
+        env
+      );
+      if (!validation.pass) {
+        console.log(`[Catering] Validation failed for ${lead.name}: ${validation.issues.join(', ')}`);
+        return {
+          action: 'held',
+          reason: `Validation failed: ${validation.issues.join('; ')}`,
+          validation_issues: validation.issues,
+          suggestion: validation.suggestion,
+        };
       }
 
       // Dedup: skip if this lead already has a pending email waiting for approval
@@ -1048,23 +1469,17 @@ async function sendFollowUp(lead, step, env) {
     } catch { text = null; }
   }
   if (!text) {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        system: CATERING_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: prompt }],
-      }),
+    // DIF-3 (May 13 2026): wired through ai-budget
+    const r = await callAI(env, {
+      use_case: 'catering_followup',
+      model: 'haiku',
+      max_tokens: 300,
+      system: CATERING_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: prompt }],
+      caller: 'catering-agent.js',
     });
     if (!r.ok) return;
-    const data = await r.json();
-    text = data.content?.[0]?.text || '';
+    text = r.content || '';
   }
 
   try {
@@ -1096,27 +1511,21 @@ async function sendFollowUp(lead, step, env) {
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-async function callClaudeWithTools(apiKey, systemPrompt, messages) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
-      system: systemPrompt,
-      tools: CATERING_TOOLS,
-      messages,
-    }),
+async function callClaudeWithTools(env, systemPrompt, messages) {
+  // DIF-3 (May 13 2026): wired through ai-budget
+  const result = await callAI(env, {
+    use_case: 'catering_agent_tool_loop',
+    model: 'sonnet',
+    max_tokens: 2000,
+    system: systemPrompt,
+    tools: CATERING_TOOLS,
+    messages,
+    caller: 'catering-agent.js',
   });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${text}`);
+  if (!result.ok) {
+    throw new Error(`Claude API error: ${result.error || result.blocked_reason || 'unknown'}`);
   }
-  return response.json();
+  return result.raw;
 }
 
 async function getPendingApprovals(env) {
@@ -1213,11 +1622,18 @@ async function getCateringStats(env) {
     SELECT
       COUNT(*) as total_leads,
       SUM(CASE WHEN tier = 1 THEN 1 ELSE 0 END) as tier1,
+      SUM(CASE WHEN status = 'prospect' THEN 1 ELSE 0 END) as prospects,
       SUM(CASE WHEN status = 'contacted' THEN 1 ELSE 0 END) as contacted,
       SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END) as replied,
       SUM(CASE WHEN status = 'booked' THEN 1 ELSE 0 END) as booked,
       SUM(CASE WHEN status = 'recurring' THEN 1 ELSE 0 END) as recurring,
-      SUM(CASE WHEN source = 'retail_crossover' THEN 1 ELSE 0 END) as crossover_leads
+      SUM(CASE WHEN status = 'drew_flag' THEN 1 ELSE 0 END) as drew_flag,
+      SUM(CASE WHEN source = 'retail_crossover' THEN 1 ELSE 0 END) as crossover_leads,
+      SUM(CASE WHEN source = 'apollo' THEN 1 ELSE 0 END) as apollo_leads,
+      SUM(CASE WHEN source = 'manual' THEN 1 ELSE 0 END) as manual_leads,
+      SUM(CASE WHEN source = 'retail_crossover' AND status = 'prospect' THEN 1 ELSE 0 END) as prospects_crossover,
+      SUM(CASE WHEN source = 'apollo' AND status = 'prospect' THEN 1 ELSE 0 END) as prospects_apollo,
+      SUM(CASE WHEN source = 'manual' AND status = 'prospect' THEN 1 ELSE 0 END) as prospects_manual
     FROM catering_leads
   `).first();
 
@@ -1302,14 +1718,16 @@ RULES:
 Return JSON only: {"subject": "...", "body": "...", "self_score": 8}`;
 
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 500, messages: [{ role: 'user', content: prompt }] }),
+      // DIF-3 (May 13 2026): wired through ai-budget
+      const resp = await callAI(env, {
+        use_case: 'catering_voice_coach',
+        model: 'sonnet',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }],
+        caller: 'catering-agent.js',
       });
       if (!resp.ok) continue;
-      const data = await resp.json();
-      const text = data.content?.[0]?.text || '';
+      const text = resp.content || '';
       const draft = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
       await env.DB.prepare(
         `UPDATE catering_outreach_logs SET subject = ?, body = ?, self_score = ?, notes = 'voice-coached' WHERE id = ?`
@@ -1333,7 +1751,9 @@ async function sendGmail(env, { to, subject, body, threadId }) {
     }),
   });
   const { access_token } = await tokenResp.json();
-  const message = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
+  // RFC 2047 encode subject when it contains non-ASCII
+  const encSubj = /^[\x00-\x7F]*$/.test(subject) ? subject : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(subject)))}?=`;
+  const message = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`, `Subject: ${encSubj}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
   const bytes = new TextEncoder().encode(message);
   const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
   const encoded = btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

@@ -1,0 +1,19 @@
+# DIF-4 Deprecation Allowlist
+# Format: regex pattern, one per line. Comments start with #.
+# When a violation matches one of these, it's intentionally allowed.
+#
+# Rules:
+#  - Every entry MUST include a justification comment above
+#  - Re-evaluate quarterly: stale allowlist entries are themselves drift
+
+# Streaming SSE response in chat-worker.js handleChatStream cannot use callAI
+# (wrapper has no streaming support). Cost is logged post-stream via direct
+# ai_calls INSERT. The hardcoded 'claude-sonnet-4-6' there is the streaming
+# request body model. Allow this specific reference until callAI supports SSE.
+chat-worker\.js:699:.*claude-sonnet-4-6
+chat-worker\.js:782:.*claude-sonnet-4-6
+
+# fetchWithBackoff health check in finance-audit-engine.js: pings Anthropic with
+# custom retry semantics; failure trips read-only. Routing through callAI would
+# conflate "budget blocked" with "API broken." Health check needs literal model id.
+finance-audit-engine\.js:.*claude-haiku-4-5

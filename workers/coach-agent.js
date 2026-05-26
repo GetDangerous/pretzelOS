@@ -29,6 +29,8 @@
  *   DB, KV
  */
 
+import { callAI } from './ai-budget.js';
+
 const COACH_SESSION_TTL = 60 * 60 * 4;  // 4 hours — longer than chat sessions
 
 // ── COACH TOOLS ───────────────────────────────────────────────────────────────
@@ -304,28 +306,22 @@ async function handleTeach(request, env) {
   while (loops < 8) {
     loops++;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        system: COACH_SYSTEM_PROMPT,
-        tools: COACH_TOOLS,
-        messages,
-      }),
+    // DIF-3 (May 13 2026): wired through ai-budget (tool-loop, uses result.raw)
+    const result = await callAI(env, {
+      use_case: 'sales_coaching',
+      model: 'sonnet',
+      caller: 'coach-agent.js',
+      max_tokens: 1500,
+      system: COACH_SYSTEM_PROMPT,
+      tools: COACH_TOOLS,
+      messages,
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      return json({ error: err }, 500);
+    if (!result.ok) {
+      return json({ error: result.error || result.blocked_reason || 'ai_call_failed' }, 500);
     }
 
-    const data = await response.json();
+    const data = result.raw;
     messages.push({ role: 'assistant', content: data.content });
 
     if (data.stop_reason === 'end_turn') {

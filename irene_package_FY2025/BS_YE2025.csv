@@ -1,0 +1,77 @@
+Pretzel OS — Balance Sheet
+As of: 2025-12-31
+Fiscal Year Start: 2025-01-01
+Basis: cash
+
+Account,Balance
+"=== ASSETS ==="
+"--- Current Assets ---"
+"Clearing Accounts:Cash Clearing",176851.18
+"Clearing Accounts:Credit Card Clearing",38690.63
+"Clearing Accounts:Doordash Clearing",-28849.29
+"Clearing Accounts:Grubhub Clearing",-2173.54
+"Clearing Accounts:Payroll Clearing",6175.46
+"Clearing Accounts:Square Clearing",-34024.08
+"Clearing Accounts:UberEats Clearing",-3753.30
+"Mercury Checking (0118) - 1",1197.38
+"Mercury Savings (5450) - 1",11878.35
+"Prepaid expenses",9764.01
+"  Total Current Assets",175756.80
+"--- Fixed Assets ---"
+"Accumulated amortization",-7090.00
+"Accumulated depreciation",-342675.00
+"Branding",44375.00
+"Furniture & Fixtures",15111.66
+"Leasehold Improvements",326727.19
+"Long-term office equipment",909.34
+"Restaurant equipment, tools, and Machinery",206711.54
+"Signage",8970.01
+"Vehicles",200000.00
+"  Total Fixed Assets",453039.74
+"--- Other Assets ---"
+"Security deposits",20932.49
+"  Total Other Assets",20932.49
+"=== Total ASSETS ===",649729.03
+
+"=== LIABILITIES ==="
+"--- Current Liabilities ---"
+"Gift Card Liability",2604.44
+"Mercury Credit (0000) - 1",1098.32
+"Note Payable - Toast",-1086.33
+"Payroll Clearing (deleted)",-191.47
+"Payroll Liabilities:Manual Checks",4677.11
+"Payroll Liabilities:Payroll tax to pay",5877.58
+"Pre-Pretzel-OS Reconciliation",14561.14
+"Prepaid Orders",1599.05
+"Sales tax to pay",1672.04
+"Tips Payable",8167.55
+"  Total Current Liabilities",38979.43
+"--- Long-term Liabilities ---"
+"N/P LEAF Funding Comm Kitchen - 2",14896.98
+"N/P LEAF Funding Kemper Bakery",14560.97
+"N/P LEAF funding Commercial Kitchen Supply",12610.16
+"N/P LEAF funding Pizza Ovens",35195.86
+"Note Payable - Todd and Amanda (deleted)",-1632.49
+"  Total Long-term Liabilities",75631.48
+"=== Total LIABILITIES ===",114610.91
+
+"=== EQUITY ==="
+"--- Partner Investments ---"
+"Partner investments",3264.98
+"Partner investments:Drew and Lindsay",1071543.80
+"  Total Partner Investments",1074808.78
+"--- Partner Distributions ---"
+"Partner distributions",-36.00
+"  Total Partner Distributions",-36.00
+"--- Retained Earnings (prior years) ---"
+"Pre-Sync Adjustments",-19430.33
+"Retained Earnings",-510471.20
+"YE2024 Bank Reconciliation Adjustment",-9753.13
+"  Total Retained Earnings (prior years)",-539654.66
+"--- Current Year Earnings ---"
+"Net Income FY 2025 YTD",0.00
+"  Total Current Year Earnings",0.00
+"=== Total EQUITY ===",535118.12
+
+"TOTAL LIABILITIES + EQUITY",649729.03
+"Unbalanced by",0.00

@@ -37,8 +37,30 @@ export class OutreachApprovalWorkflow extends WorkflowEntrypoint {
       channel,        // 'outreach' | 'catering'
       sequenceStep,   // 1=first touch, 2=day-3 follow-up, 3=day-7 follow-up
       subjectVariant, // A/B test: 'A' (question) or 'B' (hook)
+      threadId,       // Gmail thread ID for follow-up threading
     } = event.payload;
     const step_num = sequenceStep || 1;
+
+    // Bug 1.1 Site (b): pre-park gate. Block a draft from hitting the approval queue
+    // if the recipient already received a recent send / previously declined / is placeholder.
+    // Drop the enrollment with outcome='gate_blocked' so analytics show the reason.
+    await step.do('contact-gate', async () => {
+      const blocked = await checkContactGate(contactEmail, this.env, { isFollowUp: step_num > 1 });
+      if (blocked) {
+        await this.env.DB.prepare(`
+          INSERT OR IGNORE INTO outreach_logs (
+            id, venue_id, sequence_step, channel, direction,
+            subject, body, from_address, to_address,
+            approval_status, agent_reasoning, created_at
+          ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, 'gate_blocked', ?, datetime('now'))
+        `).bind(
+          logId, venueId, step_num, subject, body,
+          this.env.FROM_EMAIL, contactEmail,
+          `Contact gate: ${blocked.reason} — ${blocked.detail || ''}`
+        ).run();
+        throw new Error(`contact_gate_blocked: ${blocked.reason}`);
+      }
+    });
 
     // ── Step 1: Write pending record to D1 ───────────────────────
     await step.do('write-pending', async () => {
@@ -47,12 +69,12 @@ export class OutreachApprovalWorkflow extends WorkflowEntrypoint {
           id, venue_id, sequence_step, channel, direction,
           subject, body, from_address, to_address,
           approval_status, agent_reasoning, self_score,
-          subject_variant, created_at
-        ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
+          subject_variant, gmail_thread_id, created_at
+        ) VALUES (?, ?, ?, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'))
       `).bind(
         logId, venueId, step_num, subject, body,
         this.env.FROM_EMAIL, contactEmail,
-        reasoning, selfScore, subjectVariant || null
+        reasoning, selfScore, subjectVariant || null, threadId || null
       ).run();
     });
 
@@ -115,7 +137,9 @@ export class OutreachApprovalWorkflow extends WorkflowEntrypoint {
         to: latestLog.to,
         subject: latestLog.subject,
         body: latestLog.body,
+        threadId: threadId || null,
         logId,
+        isFollowUp: step_num > 1,
       });
       // Return serializable result — never throw so step.do doesn't infinite-retry
       if (!result || result.error) {
@@ -185,7 +209,71 @@ export class OutreachApprovalWorkflow extends WorkflowEntrypoint {
 }
 
 // ── Gmail helper (same as approval-mailer.js but local copy for the Workflow) ─
-async function sendGmail(env, { to, subject, body, logId }) {
+// Bug 1.1 — contact-gate check. Lightweight variant of canContactAddress in outreach-agent.js.
+// Duplicated here instead of imported to keep the workflow entry-point self-contained.
+async function checkContactGate(toAddress, env, opts = {}) {
+  if (!toAddress || typeof toAddress !== 'string') return { reason: 'no_address' };
+  const addr = toAddress.trim().toLowerCase();
+  const INVALID = [/@domain\.(com|org|net)$/i, /@example\./i, /^test@/i, /^user@/i, /^noreply@/i, /^no-reply@/i, /^donotreply@/i, /^info@info\./i, /@localhost/i];
+  if (INVALID.some(p => p.test(addr))) return { reason: 'placeholder_address', detail: addr };
+
+  // Follow-ups intentionally re-send to the same address within the 90d window — that IS the follow-up.
+  if (!opts.isFollowUp) {
+    const recent = await env.DB.prepare(
+      `SELECT id, sent_at, venue_id FROM outreach_logs WHERE LOWER(to_address) = ? AND sent_at IS NOT NULL AND sent_at >= datetime('now','-90 days') ORDER BY sent_at DESC LIMIT 1`
+    ).bind(addr).first().catch(() => null);
+    if (recent) return { reason: 'recent_send_exists', detail: `Last sent ${recent.sent_at?.slice(0, 10)} for ${recent.venue_id}` };
+  }
+
+  const declined = await env.DB.prepare(
+    `SELECT classification FROM inbound_replies WHERE LOWER(from_email) = ? AND classification IN ('already_has_vendor','not_interested','unsubscribe','negative') ORDER BY received_at DESC LIMIT 1`
+  ).bind(addr).first().catch(() => null);
+  if (declined) return { reason: 'previously_declined', detail: declined.classification };
+
+  // Audit Gap 7 — domain-level check, same as canContactAddress in outreach-agent.js.
+  const at = addr.indexOf('@');
+  if (at > 0) {
+    const domain = addr.slice(at + 1);
+    const FREE_MAIL = new Set(['gmail.com','googlemail.com','yahoo.com','outlook.com','hotmail.com','icloud.com','me.com','aol.com','proton.me','protonmail.com','msn.com','live.com','ymail.com']);
+    if (!FREE_MAIL.has(domain)) {
+      const domainDeclined = await env.DB.prepare(
+        `SELECT from_email, classification FROM inbound_replies WHERE LOWER(from_email) LIKE ? AND classification IN ('already_has_vendor','not_interested','unsubscribe','negative') ORDER BY received_at DESC LIMIT 1`
+      ).bind('%@' + domain).first().catch(() => null);
+      if (domainDeclined) return { reason: 'previously_declined', detail: `Domain declined via ${domainDeclined.from_email}` };
+    }
+  }
+
+  return null;
+}
+
+// V3 Bug 1.5 — click tracking link rewrite. Duplicated from outreach-agent.js
+// on purpose: workflow is a separate module and we avoid cross-worker imports.
+function rewriteLinksForTracking(body, logId) {
+  if (!body || !logId) return body;
+  const base = 'https://pretzel-os.drew-f39.workers.dev/track/click/';
+  const encode = (s) => {
+    const bytes = new TextEncoder().encode(s);
+    const binString = Array.from(bytes, b => String.fromCodePoint(b)).join('');
+    return btoa(binString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  return body.replace(/(https?:\/\/[^\s<>"')]+)/g, (match) => {
+    if (match.startsWith('https://pretzel-os.drew-f39.workers.dev/outreach/pixel/')) return match;
+    if (match.startsWith('https://pretzel-os.drew-f39.workers.dev/track/click/')) return match;
+    return `${base}${logId}?u=${encode(match)}`;
+  });
+}
+
+async function sendGmail(env, { to, subject, body, threadId, logId, isFollowUp = false }) {
+  // Bug 1.1 Site (c) for workflow path: final send-time gate.
+  const blocked = await checkContactGate(to, env, { isFollowUp });
+  if (blocked) {
+    console.error(`[OutreachWorkflow] sendGmail ABORTED — ${blocked.reason}: ${blocked.detail || ''} (to=${to}, logId=${logId})`);
+    throw new Error(`contact_gate_blocked: ${blocked.reason}`);
+  }
+
+  // V3 Bug 1.5 — rewrite http(s) URLs in the body for click tracking.
+  body = rewriteLinksForTracking(body, logId);
+
   const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -205,10 +293,15 @@ async function sendGmail(env, { to, subject, body, logId }) {
   const htmlBody = body.replace(/\n/g, '<br>') +
     (pixelUrl ? `<img src="${pixelUrl}" width="1" height="1" style="display:none" alt="">` : '');
 
+  // RFC 2047 encode subject when it contains non-ASCII (em dashes, etc.)
+  const encodedSubject = /^[\x00-\x7F]*$/.test(subject)
+    ? subject
+    : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(subject)))}?=`;
+
   const message = [
     `To: ${to}`,
     `From: Drew <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`,
+    `Subject: ${encodedSubject}`,
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=utf-8',
     '',
@@ -220,7 +313,7 @@ async function sendGmail(env, { to, subject, body, logId }) {
   const resp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ raw: encoded }),
+    body: JSON.stringify(threadId ? { raw: encoded, threadId } : { raw: encoded }),
   });
   const result = await resp.json();
   return result; // { id, threadId, labelIds }
@@ -241,6 +334,7 @@ export class CateringApprovalWorkflow extends WorkflowEntrypoint {
       body,
       selfScore,
       reasoning,
+      threadId,
     } = event.payload;
 
     await step.do('write-pending', async () => {
@@ -248,12 +342,12 @@ export class CateringApprovalWorkflow extends WorkflowEntrypoint {
         INSERT OR IGNORE INTO catering_outreach_logs (
           id, lead_id, sequence_step, channel, direction,
           subject, body, from_address, to_address,
-          approval_status, agent_reasoning, self_score, created_at
-        ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
+          approval_status, agent_reasoning, self_score, gmail_thread_id, created_at
+        ) VALUES (?, ?, 1, 'email', 'out', ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))
       `).bind(
         logId, leadId, subject, body,
         this.env.FROM_EMAIL, contactEmail,
-        reasoning, selfScore
+        reasoning, selfScore, threadId || null
       ).run();
     });
 
@@ -307,7 +401,7 @@ export class CateringApprovalWorkflow extends WorkflowEntrypoint {
     });
 
     const gmailResult = await step.do('send-email', async () => {
-      return sendGmail(this.env, { to: latestLog.to, subject: latestLog.subject, body: latestLog.body, logId });
+      return sendGmail(this.env, { to: latestLog.to, subject: latestLog.subject, body: latestLog.body, threadId: threadId || null, logId });
     });
 
     await step.do('update-records', async () => {

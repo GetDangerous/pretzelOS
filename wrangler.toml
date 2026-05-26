@@ -27,18 +27,44 @@ crons = [
   "0 4 * * 7",       # CFO:        Sunday   10pm MT (4am UTC Mon)
   "0 5 * * 7",       # Optimizer:  Sunday   11pm MT (5am UTC Mon)
   "0 12 * * 1",      # Scout:      Monday    6am MT (12pm UTC)
-  "0 13 * * 1",      # Qualifier:  Monday    7am MT (1pm UTC)
-  "0 14 * * 1",      # Catering:   Monday    8am MT (2pm UTC)
+  "0 13 * * 1",      # Qualifier:  Monday    7am MT (1pm UTC Mon)
+  "0 13 * * 4",      # Qualifier:  Thursday  7am MT (1pm UTC Thu) — clears backlog mid-week
+  "0 14 * * 1",      # Outreach:   Monday    8am MT (2pm UTC) — outreach solo Mon
+  "5 14 * * 1",      # Catering:   Monday    8:05am MT — split to avoid CPU collision
   "0 14 * * 2",      # Outreach:   Tuesday   8am MT (2pm UTC)
-  "0 14 * * 3",      # Catering+Outreach: Wednesday 8am MT (2pm UTC)
+  "0 14 * * 3",      # Outreach:   Wednesday 8am MT (2pm UTC)
+  "5 14 * * 3",      # Catering:   Wednesday 8:05am MT — split
   "0 14 * * 4",      # Outreach:   Thursday  8am MT (2pm UTC)
-  "0 14 * * 5",      # Outreach+Catering: Friday 8am MT (2pm UTC)
+  "0 14 * * 5",      # Outreach+Pilot: Friday 8am MT (2pm UTC)
+  "5 14 * * 5",      # Catering:   Friday    8:05am MT — split
   "0 15 * * 1",      # Account:    Monday    9am MT (3pm UTC)
   "30 12 * * *",     # Signal Scanner: Daily 6:30am MT (12:30pm UTC)
   "0 10 * * *",      # Toast Sync: Daily     4am MT (10am UTC)
   "0 20 * * *",      # Reviews+Retail: Daily 2pm MT (8pm UTC)
   "0 * * * *",       # CFO Pulse: Hourly (D1 only, free)
   "*/15 * * * *",    # Reply Scanner: Every 15 min (Gmail scan, no Claude)
+  "0 23 * * 5",      # Weekly Digest: Friday 5pm MT (11pm UTC)
+  "0 11 * * *",      # Catering Crossover Scout: Daily 5am MT (11am UTC) — seeds retail→catering leads
+  "30 13 * * 1",     # Catering Apollo Scout: Monday 7:30am MT (13:30 UTC) — weekly ICP pull
+  "0 13 * * *",      # CFO Daily Close: Daily 7am MT (13:00 UTC) — Mercury sync + categorize + post JEs + forecast
+  "0 12 1 * *",      # CFO Monthly Close: 1st of month 6am MT (12:00 UTC) — final recon + P&L/BS/CF + period lock
+  "0 4 * * 1",       # CFO Weekly Directive: Monday 10pm Sunday MT (4:00 UTC Mon) — Sonnet-powered strategic brief
+  "0 14 * * *",      # CFO Reconciliation Email: Daily 8am MT (14:00 UTC) — Mercury vs books variance report
+  "5 * * * *",       # CFO Audit Tier 1: Hourly at :05 — ledger invariants; any failure trips read-only
+  "20 */4 * * *",    # Plaid Chase CC sync: every 4h at :20 — /transactions/sync
+  "30 13 * * *",     # CFO Daily Morning Pulse: Daily 7:30am MT (13:30 UTC) — scorecard email to Drew, after daily close
+  "30 14 * * *",     # CFO Audit Tier 2: Daily 8:30am MT (14:30 UTC) — state/drift/operational; informational only
+  "15 14 * * *",     # CFO Issue Surfacer: Daily 8:15am MT — proactive anomaly scan
+  "45 5 * * *",      # Square Labor sync: Daily 11:45pm MT (5:45 UTC) — pull shifts + scheduled
+  "0 */6 * * *",     # Pipeline-stalled alarm + Square customer sync: every 6h
+  "0 16 * * 2",      # Email Cohort B: Tuesday 10am MT (16:00 UTC) — Square first-time win-back batch
+  "15 * * * *",      # Retail V2 suggestions engine: hourly :15 — formula-driven candidates
+  "0 5 * * *",       # Retail V2 verdict: daily 11pm MT (5:00 UTC) — Sonnet 1-paragraph synthesis
+  "30 5 * * *",      # Code-expiration cleaner: daily 11:30pm MT (5:30 UTC) — post-May-11 loyalty migration
+  "0 9 1 * *",       # Monthly depreciation: 1st of month 3am MT (9:00 UTC) — auto-post depreciation+amortization for prior month per fixed_assets registry
+  "0 15 1 * *",      # Tier 5 monthly acceptance: 1st of month 9am MT (15:00 UTC) — full-year replay vs QBO truth, alert on drift >2%
+  "0 14 28 * *",     # Mercury IO statement reminder: 28th of each month 8am MT (14:00 UTC) — email Drew to upload latest Mercury IO statement
+  "0 16 * * *",      # Catering Reactivation 2026: daily 10am MT (16:00 UTC) — sends up to 18/day, auto-stops when cohort cleared
 ]
 
 # ── Queues (Reply Handler) ─────────────────────────────────
@@ -148,6 +174,18 @@ OUTREACH_WARMUP_WEEKS = "0"          # No warmup gating — send to Tier 1+2 imm
 OUTREACH_APPROVAL_GATE = "10"        # Human review first 10, then auto-send unlocks
 OUTREACH_QUALITY_MIN = "7"           # Min self-score before send
 REVIEW_REQUEST_COOLDOWN_DAYS = "30"
+
+# Session 0 (May 13 2026): flip auth on. Shared secret in dashboard JS;
+# defense-in-depth, not real auth. Real auth = Cloudflare Access later.
+AUTH_ENFORCE = "true"
+
+# Session 0: AI budget caps. Daily soft ~$45/mo target. Hard $75/mo. Monthly hard $50.
+# Sonnet downgrades to Haiku above soft cap. Refused entirely above daily/monthly hard.
+AI_DAILY_SOFT_CAP_USD   = "1.50"
+AI_DAILY_HARD_CAP_USD   = "2.50"
+AI_MONTHLY_SOFT_CAP_USD = "35.00"
+AI_MONTHLY_HARD_CAP_USD = "50.00"
+AI_MAX_TOKENS_PER_CONV  = "100000"
 DEPLOY_DATE = "2026-03-20"
 ENVIRONMENT = "production"
 SQUARE_LOCATION_ID = "LEJ3PDZ9V6NYN"

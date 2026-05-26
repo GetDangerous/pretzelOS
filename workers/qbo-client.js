@@ -68,9 +68,12 @@ export async function getQBOToken(env) {
     { expirationTtl: Math.floor(expiresIn / 1000) - 300 }
   );
 
-  // Auto-rotate: if QBO issued a new refresh token, store it in KV
+  // Auto-rotate: if QBO issued a new refresh token, store it in KV.
+  // Tier 2c — also record the rotation timestamp so /system/connections can
+  // warn ~14d before the 101-day refresh token expires.
   if (data.refresh_token && data.refresh_token !== refreshToken) {
     await env.KV.put('qbo_refresh_token', data.refresh_token);
+    await env.KV.put('qbo_refresh_token_rotated_at', new Date().toISOString());
     console.log('[QBO] Refresh token rotated and stored in KV');
   }
 
@@ -107,7 +110,7 @@ async function qboQuery(env, endpoint, params = {}) {
 }
 
 // ── SQL-STYLE QUERY (for Invoice, Estimate, Customer queries) ─────────────────
-async function qboSqlQuery(env, sql) {
+export async function qboSqlQuery(env, sql) {
   const token   = await getQBOToken(env);
   const kvRealmId = await env.KV.get('qbo_realm_id');
   const realmId = kvRealmId || env.QBO_REALM_ID;
@@ -177,8 +180,11 @@ export async function getExpenses(env, startDate, endDate) {
 
 export async function getBalanceSheet(env, asOfDate) {
   try {
+    const dt = asOfDate || new Date().toISOString().split('T')[0];
     return await qboQuery(env, 'reports/BalanceSheet', {
-      report_date: asOfDate || new Date().toISOString().split('T')[0],
+      start_date: dt,
+      end_date: dt,
+      accounting_method: 'Cash',
     });
   } catch (err) {
     return { error: err.message, report: 'BalanceSheet' };
@@ -361,7 +367,16 @@ export async function syncQBOInvoicesToD1(env) {
           amount,
           amount,
           customerName,
-          JSON.stringify({ invoice_id: inv.Id, doc_number: inv.DocNumber, status, balance: inv.Balance, due_date: inv.DueDate, line_items: (inv.Line || []).filter(l => l.DetailType === 'SalesItemLineDetail').length })
+          JSON.stringify({
+            invoice_id: inv.Id,
+            doc_number: inv.DocNumber,
+            txn_date: inv.TxnDate,                      // audit trail — actual QBO date stamped on the invoice
+            create_time: inv.MetaData?.CreateTime,      // when the invoice was created in QBO
+            status,
+            balance: inv.Balance,
+            due_date: inv.DueDate,
+            line_items: (inv.Line || []).filter(l => l.DetailType === 'SalesItemLineDetail').length,
+          })
         ).run();
         inserted++;
       }
@@ -369,6 +384,28 @@ export async function syncQBOInvoicesToD1(env) {
       console.error(`[QBO] Invoice sync error for ${customerName}:`, err.message);
       skipped++;
     }
+  }
+
+  // Ghost cleanup — DELETE rows in our DB that QBO didn't return.
+  // The 120-day LastUpdatedTime filter means deleted/voided invoices stop showing up;
+  // without this pass they'd accumulate forever and inflate "invoices sent" totals.
+  // Scope: only invoices dated within our sync window (last 120d) — anything older
+  // is preserved as immutable history.
+  let voidedDeleted = 0;
+  try {
+    const liveIds = new Set(invoices.map(i => `qbo_inv_${i.Id}`));
+    const cutoffDate = new Date(Date.now() - 120 * 86400000).toISOString().split('T')[0];
+    const dbRows = await env.DB.prepare(
+      `SELECT id FROM orders WHERE source='qbo_wholesale' AND order_date >= ?`
+    ).bind(cutoffDate).all();
+    const ghosts = (dbRows.results || []).map(r => r.id).filter(id => !liveIds.has(id));
+    for (const ghostId of ghosts) {
+      await env.DB.prepare(`DELETE FROM orders WHERE id = ?`).bind(ghostId).run().catch(() => {});
+      voidedDeleted++;
+    }
+    if (voidedDeleted > 0) console.log(`[QBO] Deleted ${voidedDeleted} ghost invoice(s) no longer in QBO`);
+  } catch (err) {
+    console.error('[QBO] Ghost cleanup failed:', err.message);
   }
 
   // Now update active_accounts from the synced data
@@ -409,7 +446,7 @@ export async function syncQBOInvoicesToD1(env) {
   }
 
   console.log(`[QBO] Invoice sync complete: ${inserted} inserted, ${updated} updated, ${skipped} skipped`);
-  return { inserted, updated, skipped, total_invoices: invoices.length };
+  return { inserted, updated, skipped, voided_deleted: voidedDeleted, total_invoices: invoices.length };
 }
 
 // Fuzzy match QBO customer name to D1 venue/account
@@ -702,6 +739,20 @@ export default {
       try {
         const pnl = await getProfitAndLoss(env, params.start || weekAgo, params.end || today);
         return new Response(JSON.stringify(extractPLNumbers(pnl), null, 2), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+      }
+    }
+
+    // Balance Sheet — returns raw QBO report for post-Irene rebaseline (Phase 33-L)
+    if (url.pathname === '/qbo/balance-sheet') {
+      const params = Object.fromEntries(url.searchParams);
+      const today = new Date().toISOString().split('T')[0];
+      try {
+        const bs = await getBalanceSheet(env, params.as_of || today);
+        return new Response(JSON.stringify(bs, null, 2), {
           headers: { 'Content-Type': 'application/json' }
         });
       } catch (err) {

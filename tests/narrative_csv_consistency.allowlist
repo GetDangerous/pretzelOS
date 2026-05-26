@@ -1,0 +1,27 @@
+# Narrative-CSV Consistency Allowlist
+#
+# Format: one figure per line. Comments start with #.
+# These figures appear in narrative explanation paragraphs but not in summary CSVs.
+# They are legitimate narrative-context (computed sums, historical states, components)
+# and don't represent inconsistencies with shipped data.
+#
+# Each entry MUST have a comment explaining WHY it's in the narrative but not in a CSV.
+# Reviewer should verify the explanation is true.
+
+# Phase 32 README — cross-statement reconciliation explanation
+104957.63  # YE2024 LEAF long-term liability total (sum of 4 loans pre-paydown). Used in SOCF financing reconciliation paragraph.
+77263.97   # YE2025 LEAF long-term liability total (sum of 4 loans post-paydown). Used in same paragraph.
+
+# Phase 32 README — Phase 32-C1 disclosure paragraph
+35200.15   # FY2026 Payroll Clearing residual after partial reconstruction. Computed sub-balance, not BS total.
+82144.81   # FY2026 Payroll Clearing pre-32-C1 (historical state — used to show improvement)
+60418.82   # FY2026 toast_payroll_reconstruction total posted (computed sum across 12 JEs)
+
+# Phase 32 README — Mercury Intra-Period Drift disclosure
+4061.42    # Mar 31 2025 Mercury Checking GL-vs-statement drift. Intra-period detail, not in YE-only CSVs.
+
+# Phase 32-C1 — FY2026 BS imbalance disclosure (out-of-period)
+5084.32    # BS off at FY2026 mid-period dates (Apr 30 + May 19 2026). FY2026 P&L expense from Phase 32-C1 reconstruction in unclosed period. Documented as non-blocking — FY2026 isn't being filed.
+
+# Phase 32-Defect-3 — Implied FY2025-only Payroll Clearing residual
+29024.69   # Implied FY2025-only Payroll Clearing residual = $6,175.46 GL - $35,200.15 FY2026 DR contamination. Net CR timing artifact (FY2025 accruals awaiting matching cash legs). Computed sub-balance, not a CSV-shipped figure.

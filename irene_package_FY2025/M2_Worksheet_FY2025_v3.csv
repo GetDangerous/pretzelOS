@@ -1,0 +1,53 @@
+"Dangerous Pretzel Company LLC"
+"Schedule M-2 — Partners' Capital Accounts Reconciliation (v3 post-rebaseline + Y-2/Y-3 verification)"
+"Period: FY2025 (01/01/2025 — 12/31/2025)"
+""
+"Line","Description","Amount"
+"1","Balance at beginning of year (per filed 2024 Form 1065 Sch M-2 Line 9 ending balance)","593615.00"
+"",,
+"2a","Capital contributed during year — cash (Wells Fargo transfers Sep 23 + 26 2025)","50000.00"
+"2b","Capital contributed during year — property (Sprinter Van; FMV/basis $200,000; contributed Jan 15 2025; 100% business use)","200000.00"
+"",,
+"3","Net income (loss) per books (FY2025 filing position)","-346898.53"
+"",,
+"4","Other increases:",""
+"","  - Minor partner investment adjustment (Jun 2025 N/P T&A → Partner investments reclass per bookkeeper)","1632.49"
+"","  - YE2024 Bank Reconciliation Adjustment (prior-period timing residual; CR balance = positive equity)","3456.40"
+"",,
+"5","Subtotal (Lines 1 + 2 + 3 + 4)","501805.36"
+"",,
+"6","Distributions","0.00"
+"",,
+"7","Other decreases:",""
+"","  - SLCBADJ reclass from capital to Note Payable - Drew & Lindsay (Jan 1 2025, per Drew Feb 26 2025 instruction)","-20975.00"
+"","  - Bridge BLOQ Receivable clearing (PPA per Irene §110 election; receivable reclassified as basis adjustment, not asset; see Memo Item 4 and BS correction C3)","-123400.74"
+"","  - Reconciling residual (rounding through filed prior-year figures and accumulated minor adjustments; immaterial)","-599.90"
+"",,
+"8","Balance at end of year","356829.72"
+"",,
+"=== Cross-check to BS_YE2025_filing_v3.csv ===",""
+"Schedule M-2 Line 8 ending capital","356829.72"
+"BS Total Equity (per filing BS v3)","356829.72"
+"Variance","0.00"
+"",,
+"=== Per-partner allocation (50/50 per filed 2024 K-1s) ===",""
+"Drew Sparks 50%","178414.86"
+"Lindsay Sparks 50%","178414.86"
+"Total","356829.72"
+"",,
+"=== Walk vs v2 M-2 ==="
+"v2 Line 8 ending capital","474503.68"
+"v3 Line 8 ending capital","356829.72"
+"Δ","-117673.96"
+"Composition of Δ:",""
+"  Line 3 NI improved (less expense)","5726.78"
+"  Line 7 Bridge BLOQ PPA (new in v3)","-123400.74"
+"  Net (rounding ~$0)","-117673.96"
+"",,
+"=== Notes ===",""
+"Filed YE2024 ending capital (Line 1) ties cent-accurate to filed 2024 Form 1065 Schedule M-2 Line 9 ($593,615).",""
+"Line 1 = $593,615 confirmed from filed return PDF (signed by IB Tax & Accounting PLLC 09/15/2025).",""
+"",""
+"Line 7 Bridge BLOQ PPA (new in v3): Per Irene's confirmation that §110 was elected on the 2024 return and the Leasehold Improvements basis was reduced through 2025 QBO entries, the $123,401 Bridge BLOQ Receivable (which was carried as an asset on the filed YE2024 Sch L Statement 5) is reclassified as a prior-period equity adjustment. Under §110, the receivable shouldn't have been a separate asset — it's a basis reduction. LI on the filing BS stays at Irene's reduced $318,691 and no income is recognized.",""
+"",""
+"The reconciling residual on Line 7 (-$599.90) represents accumulated rounding and minor unidentified bookkeeper-era entries that arose during the multi-step reconciliation between QBO's RE-separate convention and the filed 1065 M-2 direct-absorption convention. Magnitude is immaterial. Disclosed transparently. Available for investigation if Irene wants strict-zero reconciliation.",""

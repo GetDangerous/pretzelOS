@@ -10,6 +10,8 @@
  * GET /rep-kit/stats                  → What reps are clicking/using
  */
 
+import { callAI } from './ai-budget.js';
+
 const BRAND_CONTEXT = `
 Dangerous Pretzel Co — Salt Lake City's premium soft pretzel brand.
 Tagline: "RUIN DINNER." / "Invented by monks, perfected for punks."
@@ -95,24 +97,18 @@ Rules:
 
 Return JSON: {pitch_30sec, numbers, best_accounts, objections, how_to_place, contact_info, distributor_note}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2500,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+  // DIF-3 (May 13 2026): wired through ai-budget
+  const result = await callAI(env, {
+    use_case: 'rep_coaching_content',
+    model: 'sonnet',
+    caller: 'rep-enablement-worker.js',
+    max_tokens: 2500,
+    messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.ok) return new Response('Error generating kit', { status: 500 });
+  if (!result.ok) return new Response('Error generating kit', { status: 500 });
 
-  const data = await response.json();
-  const text = data.content?.[0]?.text || '';
+  const text = result.content || '';
   const clean = text.replace(/```json\n?|\n?```/g, '').trim();
 
   try {

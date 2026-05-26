@@ -1,4 +1,45 @@
+# ── Build / runtime artifacts ─────────────────────────────────────────────
 .wrangler/
 node_modules/
 *.bak
+
+# ── Secrets (never commit; values live in Cloudflare secret store) ─────────
+# wrangler secrets are stored remotely via `wrangler secret put X` and never
+# appear in this tree. Anything below would be an accident if it landed locally.
 .dev.vars
+.dev.vars.*
+.env
+.env.*
+*.env.local
+secrets/
+*.pem
+*.key
+id_rsa
+id_ed25519
+*_token.txt
+*_secret.txt
+*.credentials.json
+
+# ── OS / editor metadata ──────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# ── Claude Code session/IDE settings (drew-local) ─────────────────────────
+.claude/
+
+# ── Local D1 / SQLite snapshots (in case any get pulled locally) ──────────
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.db-journal
+
+# ── Generated artifacts ───────────────────────────────────────────────────
+*.log
+coverage/
+.next/
+dist/
+build/

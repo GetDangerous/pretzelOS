@@ -1,0 +1,102 @@
+Pretzel OS — Profit & Loss Statement
+Period: FY 2025 (2025-01-01 → 2025-12-31)
+Basis: cash
+
+Account,Amount
+"--- Revenue ---"
+"Sales:Food Income:Dine-In / Takeout",312166.67
+"Sales:Food Income:Delivery",128619.80
+"Sales:Food Income",33051.52
+"Sales:Food Income:Catering",26860.26
+"Sales:Beverage Income:Beer",14004.00
+"Sales:Food Income:Wholesale",13234.05
+"Discounts, Comps & Refunds",-10121.81
+"Too Good To Go",3463.40
+"Services",765.00
+"Sales:Apparel Retail Sales",497.00
+"Service Fee Income",350.00
+"Gross Revenue",522889.89
+
+"--- Channel Adjustments (ASC 606 contra-revenue) ---"
+"Sales:Channel Adjustments:Marketplace Commission",-14542.18
+"Sales:Channel Adjustments:Marketplace Processing Fees",-8277.81
+"Sales:Channel Adjustments:Marketplace Refunds & Adjustments",-2487.09
+"Channel Adjustments",-25307.08
+
+"Net Revenue (ASC 606)",497582.81
+
+"--- Cost of Goods Sold ---"
+"Cost of goods sold:Food Purchases",87657.75
+"Cost of goods sold:Paper Packaging Products",23535.52
+"Cost of goods sold:Beer Purchases",4072.64
+"Cost of goods sold",3468.43
+"Cost of goods sold:Liquor Purchases",1492.91
+"Cost of goods sold:N/A Beverage Purchases",1188.33
+"Cost of goods sold:Wine Purchases",704.03
+"Total COGS",122119.61
+
+"Gross Profit",375463.20
+"Gross Margin %",75.46
+
+"Payment Processing",1261.67
+"Channel-Adjusted Gross Profit",374201.53
+"Channel-Adjusted GM %",75.20
+
+"--- Operating Expenses ---"
+"Payroll expenses:Salaries & wages:Front of House",90200.40
+"Rent",78963.28
+"Payroll expenses:Salaries & wages:Shift Lead",39297.92
+"Payroll expenses:Salaries & wages:Back of House",36353.79
+"Restaurant Supplies & Equipment",32425.08
+"Contract labor",21246.00
+"Payroll expenses:Payroll taxes",17723.57
+"Software & apps",17066.60
+"Advertising & marketing",16609.69
+"Legal & accounting services:Accounting fees",14235.50
+"Interest paid",11588.80
+"Insurance:Business insurance",6981.59
+"Taxes paid",5509.71
+"Business licenses & Permits",4077.98
+"Legal & accounting services:Legal fees",3414.00
+"Office expenses",3051.96
+"Repairs & maintenance",2312.77
+"Storage",1796.06
+"Laundry Expense",1392.58
+"Merchant account fees",1261.67
+"Utilities:Phone service",1139.19
+"Shipping & postage",864.92
+"Meals",724.70
+"Cleaning Expense",561.85
+"Delivery Fees",515.00
+"Delivery Fees:TDS Toast & Uber Fees",414.83
+"Recruiting Expenses",410.94
+"Supplies",229.17
+"Uniforms",128.94
+"Bank fees & service charges",114.26
+"R&D",31.42
+"Total Operating Expenses (incl. Payment Processing)",410644.17
+
+"Total Labor (incl. payroll tax/fees)",205361.56
+"Prime Cost (COGS + Labor)",327481.17
+"Prime Cost % of Revenue",65.81
+
+"Operating Income",-35180.97
+"Operating Margin %",-7.07
+"EBITDA",254437.03
+"EBITDA Margin %",51.13
+
+"--- Other Income ---"
+"Credit card rewards",1347.05
+"Interest earned",0.08
+"Total Other Income",1347.13
+
+"--- Other Expenses ---"
+"Depreciation",284891.00
+"Amortization expenses",4727.00
+"Sales Tax Over/Under",259.08
+"Vehicle expenses:Parking & tolls",147.00
+"Vehicle expenses:Vehicle gas & fuel",19.45
+"Total Other Expenses",290043.53
+
+"Net Income",-323877.37
+"Net Margin %",-65.09

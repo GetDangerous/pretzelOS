@@ -1,3 +1,5 @@
+import { getCanonicalCashOnHand } from './finance-shared.js';
+
 /**
  * Dangerous Pretzel Co — CFO Pulse
  * Cloudflare Worker (cron: every hour)
@@ -25,7 +27,7 @@
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runPulse(env));
+    return runPulse(env);
   },
 
   async fetch(request, env) {
@@ -96,17 +98,29 @@ async function runPulse(env) {
     }
   }
 
-  // Get last known cash from directive
+  // Get last known weekly burn + runway from directive (still informational —
+  // these are slow-moving and OK to read from the directive snapshot).
+  // We deliberately DO NOT read cash_on_hand from the directive — it's no
+  // longer written there as of the Apr 30 2026 reset (Phase 2). Cash always
+  // comes from the canonical helper, which now has 5-min refresh-on-read TTL.
   const lastDirective = await env.DB.prepare(
-    "SELECT estimated_weekly_revenue, estimated_weekly_burn, cash_runway_weeks, cash_on_hand FROM financial_directives WHERE active = 1 LIMIT 1"
+    "SELECT estimated_weekly_revenue, estimated_weekly_burn, cash_runway_weeks FROM financial_directives WHERE active = 1 LIMIT 1"
   ).first();
 
-  // Use stored cash_on_hand if available, otherwise estimate from runway × burn
-  const estimatedCash = lastDirective?.cash_on_hand
-    ? lastDirective.cash_on_hand + cashDeltaToday
-    : (lastDirective
-      ? ((lastDirective.cash_runway_weeks || 0) * (lastDirective.estimated_weekly_burn || 0)) + cashDeltaToday
-      : null);
+  // CANONICAL CASH: only path. If the Mercury read fails, baselineCash stays
+  // null and consumers see a clear "unavailable" state instead of silently
+  // reading stale directive data.
+  let baselineCash = null;
+  try {
+    const canonical = await getCanonicalCashOnHand(env);
+    baselineCash = canonical?.total ?? null;
+  } catch (err) {
+    console.warn('[CFO Pulse] canonical cash fetch failed:', err.message);
+  }
+
+  const estimatedCash = baselineCash != null
+    ? baselineCash + cashDeltaToday
+    : null;
 
   // ── 3. Account health snapshot ─────────────────────────────────────────────
   const accountHealth = await env.DB.prepare(`

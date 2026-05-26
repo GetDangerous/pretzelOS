@@ -1,0 +1,42 @@
+Pretzel OS — Cash Flow Statement (Indirect Method)
+Period: 2025-01-01 → 2025-12-31
+Basis: cash
+
+Activity,Description,Amount
+"=== Operating Activities ==="
+"Operating Activities","Net Income",-323877.37
+"Operating Activities","Depreciation & Amortization (non-cash)",289618.00
+"Operating Activities","(Increase)/Decrease in Accounts Receivable",0.00
+"Operating Activities","Increase/(Decrease) in Accounts Payable",0.00
+"Operating Activities","Increase/(Decrease) in Sales Tax Payable",-11365.69
+"Operating Activities","Increase/(Decrease) in Tips Payable",4306.55
+"Operating Activities","Increase/(Decrease) in Gift Card Liability",800.00
+"Operating Activities","Increase/(Decrease) in Payroll Payable",4485.64
+"Operating Activities","(Increase)/Decrease in POS Clearing Accounts",-79617.15
+"Operating Activities","(Increase)/Decrease in Prepaid + Other Current Assets",-9764.01
+"Operating Activities","Increase/(Decrease) in Accrued Liabilities",0.00
+"Operating Activities","Increase/(Decrease) in Credit Card Liabilities",1098.32
+"Operating Activities","Increase/(Decrease) in Short-Term Loans",-1061.63
+"Operating Activities","Increase/(Decrease) in Reclass Holding (bookkeeper artifact)",14561.14
+"Operating Activities","Net Cash from Operating Activities",-110816.20
+
+"=== Investing Activities ==="
+"Investing Activities","Purchases of Fixed Assets",-12338.93
+"Investing Activities","Net Cash from Investing Activities",-12338.93
+
+"=== Financing Activities ==="
+"Financing Activities","Net Loan Activity (proceeds - principal payments)",-27693.66
+"Financing Activities","Owner Capital Contributions",50000.00
+"Financing Activities","Owner Distributions",0.00
+"Financing Activities","Net Cash from Financing Activities",22306.34
+
+"=== Prior-Period Restatement Adjustments (Non-Cash GL Corrections) ==="
+"Prior-Period Restatement Adjustments (Non-Cash GL Corrections)","Phase 29 / Pre-Sync GL Corrections (Mercury impact)",42584.53
+"Prior-Period Restatement Adjustments (Non-Cash GL Corrections)","Net Cash from Prior-Period Restatement Adjustments (Non-Cash GL Corrections)",42584.53
+
+"=== Reconciliation ==="
+"Summary","Net Change in Cash",-58264.26
+"Summary","Opening Cash Balance",34961.75
+"Summary","Closing Cash Balance",13075.73
+"Summary","Actual Cash Change (from bank)",-21886.02
+"Summary","Unreconciled",-36378.24

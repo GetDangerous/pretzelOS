@@ -1,0 +1,76 @@
+Pretzel OS — Balance Sheet
+As of: 2025-12-31
+Fiscal Year Start: 2025-01-01
+Basis: cash
+
+Account,Balance
+"=== ASSETS ==="
+"--- Current Assets ---"
+"Bridge BLOQ Reimbursement Receivable",0.26
+"Clearing Accounts:Cash Clearing",166479.61
+"Clearing Accounts:Doordash Clearing",-42423.35
+"Clearing Accounts:Grubhub Clearing",-2820.21
+"Clearing Accounts:Payroll Clearing",6537.69
+"Clearing Accounts:Square Clearing",-34024.08
+"Clearing Accounts:UberEats Clearing",-7437.57
+"Mercury Checking (0118) - 1",1197.38
+"Mercury Savings (5450) - 1",11878.35
+"Prepaid expenses",9764.01
+"  Total Current Assets",109152.09
+"--- Fixed Assets ---"
+"Accumulated amortization",-7090.00
+"Accumulated depreciation",-342675.00
+"Furniture & Fixtures",2744.00
+"Leasehold Improvements",441800.00
+"Restaurant equipment, tools, and Machinery",186047.93
+"Signage",8970.00
+"Vehicles",200000.00
+"  Total Fixed Assets",489796.93
+"--- Other Assets ---"
+"Security deposits",20932.00
+"Startup & organizational costs",70900.00
+"  Total Other Assets",91832.00
+"=== Total ASSETS ===",690781.02
+
+"=== LIABILITIES ==="
+"--- Current Liabilities ---"
+"Credit Card Payable",2774.00
+"Gift Card Liability",800.00
+"Mercury Credit (0000) - 1",1098.32
+"Note Payable - Toast",2812.37
+"Payroll Clearing (deleted)",-191.47
+"Payroll Liabilities:Manual Checks",4677.11
+"Payroll Liabilities:Payroll tax to pay",4770.88
+"Payroll Payable",856.00
+"Sales tax to pay",14238.67
+"Tips Payable",4306.55
+"  Total Current Liabilities",36142.43
+"--- Long-term Liabilities ---"
+"N/P LEAF Funding Comm Kitchen - 2",20688.40
+"N/P LEAF Funding Kemper Bakery",20473.36
+"N/P LEAF funding Commercial Kitchen Supply",17713.36
+"N/P LEAF funding Pizza Ovens",48286.22
+"Note Payable - Drew & Lindsay",20975.00
+"Note Payable - Todd and Amanda (deleted)",-1632.49
+"  Total Long-term Liabilities",126503.85
+"=== Total LIABILITIES ===",162646.28
+
+"=== EQUITY ==="
+"--- Partner Investments ---"
+"Partner investments",1632.49
+"Partner investments:Drew and Lindsay",822640.00
+"  Total Partner Investments",824272.49
+"--- Partner Distributions ---"
+"Partner distributions",-18.00
+"  Total Partner Distributions",-18.00
+"--- Retained Earnings (prior years) ---"
+"Retained Earnings",-299576.15
+"YE2024 Bank Reconciliation Adjustment",3456.40
+"  Total Retained Earnings (prior years)",-296119.75
+"--- Current Year Earnings ---"
+"Net Income FY 2025 YTD",0.00
+"  Total Current Year Earnings",0.00
+"=== Total EQUITY ===",528134.74
+
+"TOTAL LIABILITIES + EQUITY",690781.02
+"Unbalanced by",0.00

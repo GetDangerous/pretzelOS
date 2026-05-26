@@ -1,0 +1,6 @@
+Sales category,Items,Net sales,Discount amount,Refund amount,Gross sales,Tax amount
+Draft Beer,25.0,201.0,0.0,0.0,201.0,18.9
+Food Delivery,276.0,2896.91,0.0,0.0,2896.91,244.19
+Food Dine-In / Takeout,905.0,5888.8,262.2,0.0,6151.0,554.01
+Non-Grat Svc Charges,1.0,3.0,0.0,0.0,3.0,0.0
+Total,1207.0,8989.71,262.2,0.0,9251.91,817.10

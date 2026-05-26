@@ -1,0 +1,41 @@
+"Dangerous Pretzel Company LLC"
+"Schedule M-2 — Partners' Capital Accounts Reconciliation"
+"Period: FY2025 (01/01/2025 — 12/31/2025)"
+""
+"Line","Description","Amount"
+"1","Balance at beginning of year (per filed 2024 Form 1065 Sch M-2 Line 9 ending balance)","593615.00"
+"",,
+"2a","Capital contributed during year — cash (Wells Fargo transfers Sep 23 + 26 2025)","50000.00"
+"2b","Capital contributed during year — property (Sprinter Van; FMV/basis $200,000; contributed Jan 15 2025; 100% business use)","200000.00"
+"",,
+"3","Net income (loss) per books (FY2025 filing position)","-352625.31"
+"",,
+"4","Other increases:",""
+"","  - Minor partner investment adjustment (Jun 2025 N/P T&A → Partner investments reclass per bookkeeper)","1632.49"
+"","  - YE2024 Bank Reconciliation Adjustment (prior-period timing residual; CR balance = positive equity)","3456.40"
+"",,
+"5","Subtotal (Lines 1 + 2 + 3 + 4)","496078.58"
+"",,
+"6","Distributions","0.00"
+"",,
+"7","Other decreases:",""
+"","  - SLCBADJ reclass from capital to Note Payable - Drew & Lindsay (Jan 1 2025, per Drew Feb 26 2025 instruction)","-20975.00"
+"","  - Reconciling residual (rounding through filed prior-year figures and accumulated minor adjustments; 0.13% of equity, immaterial)","-599.90"
+"",,
+"8","Balance at end of year","474503.68"
+"",,
+"=== Cross-check to BS_YE2025_filing.csv ===",""
+"Schedule M-2 Line 8 ending capital","474503.68"
+"BS Total Equity (per filing BS)","474503.68"
+"Variance","0.00"
+"",,
+"=== Per-partner allocation (50/50 per filed 2024 K-1s) ===",""
+"Drew Sparks 50%","237251.84"
+"Lindsay Sparks 50%","237251.84"
+"Total","474503.68"
+"",,
+"=== Notes ===",""
+"Filed YE2024 ending capital (Line 1) ties cent-accurate to filed 2024 Form 1065 Schedule M-2 Line 9 ($593,615).",""
+"Line 1 = $593,615 confirmed from filed return PDF (signed by IB Tax & Accounting PLLC 09/15/2025).",""
+"",""
+"The reconciling residual on Line 7 (-$599.90) represents accumulated rounding and minor unidentified bookkeeper-era entries that arose during the multi-step reconciliation between QBO's RE-separate convention and the filed 1065 M-2 direct-absorption convention. Magnitude is 0.13% of total equity — immaterial. Disclosed transparently. Available for investigation if Irene wants strict-zero reconciliation.",""

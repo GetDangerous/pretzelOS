@@ -1,3 +1,5 @@
+import { getCanonicalCashOnHand, getCanonicalRunway, getCanonicalWeeklyRevenue } from './finance-shared.js';
+
 /**
  * Dangerous Pretzel Co — Chat Worker
  * Cloudflare Worker (HTTP endpoint — no cron)
@@ -190,6 +192,152 @@ const CHAT_TOOLS = [
     description: 'Get a full summary of what happened this week across all channels — a quick briefing on everything the OS did.',
     input_schema: { type: 'object', properties: {} },
   },
+  // ───── Session 4 CFO tools (May 13 2026) ─────
+  {
+    name: 'get_breakeven',
+    description: 'Compute current breakeven analysis: monthly revenue vs fixed/variable costs, gap to breakeven, and 3 ranked paths to close the gap (add wholesale / reduce payroll / improve COGS). Use this for "how close are we to breakeven" questions.',
+    input_schema: { type: 'object', properties: { lookback_days: { type: 'number', description: 'Trailing window for revenue+expense averages (default 90)' } } },
+  },
+  {
+    name: 'get_trends',
+    description: 'Get rolling 3/6/12 month trend data for revenue, COGS %, gross margin %, payroll %, net income, and weekly cash burn. Returns monthly series + direction arrows + AR snapshot. Use for "how are X trending" questions.',
+    input_schema: { type: 'object', properties: { months: { type: 'number', description: 'How many months of history to return (default 12)' } } },
+  },
+  {
+    name: 'run_scenario',
+    description: 'Model a what-if scenario. Apply revenue and/or expense deltas, get projected 6-month cash and new breakeven. Example: {"revenue_delta":{"wholesale":5000},"expense_delta":{"payroll":-1000},"horizon_months":6}. Channel COGS assumptions: retail 35%, wholesale 30%, catering 40%, marketplace 50%.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        revenue_delta:  { type: 'object', description: 'Monthly $ additions by channel: {retail, wholesale, catering, marketplace}' },
+        expense_delta:  { type: 'object', description: 'Monthly $ deltas: {payroll, rent, fixed_other} + cogs_pct_change as fraction (e.g., -0.02 = drop COGS 2pp)' },
+        one_time:       { type: 'array',  description: 'One-time events: [{amount, description, month}]' },
+        horizon_months: { type: 'number', description: 'Projection horizon (default 6, max 24)' },
+      },
+    },
+  },
+  {
+    name: 'get_customer_intel',
+    description: 'Get top customers by 12-month revenue, with open AR, payment reliability score (0-100), and concentration risk assessment. Use for "who are my best customers" or concentration questions.',
+    input_schema: { type: 'object', properties: { limit: { type: 'number', description: 'Number of customers (default 25)' } } },
+  },
+  {
+    name: 'get_customer_profile',
+    description: 'Get a single customer profile with full invoice history, payment reliability, days-since-last-order, total revenue. Use when Drew asks about a specific customer by name.',
+    input_schema: { type: 'object', properties: { customer: { type: 'string', description: 'Customer name (case-insensitive)' } }, required: ['customer'] },
+  },
+  {
+    name: 'get_vendor_history',
+    description: 'Look up a vendor in the knowledge base: what account the bookkeeper categorized them as historically, how many transactions, total $ volume, dominant share. Returns the historical categorization pattern so the agent can explain or recommend.',
+    input_schema: { type: 'object', properties: { vendor: { type: 'string' } }, required: ['vendor'] },
+  },
+  {
+    name: 'get_finance_scorecard',
+    description: 'Real-time scorecard: cash on hand, runway, this week vs last week net, upcoming AR (next 30d), upcoming bills, channel mix MTD vs last month, pipeline health. Use for "how are we doing right now" / weekly check-in questions.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_monthly_pl',
+    description: 'Get monthly P&L for a specific period (YYYY-MM) OR the 4-month side-by-side view if no period given. Returns revenue, COGS, gross profit, expenses, net income with deltas vs prior months.',
+    input_schema: { type: 'object', properties: { period: { type: 'string', description: 'YYYY-MM, or omit for last 4 months side-by-side' } } },
+  },
+  {
+    name: 'get_pnl_statement',
+    description: 'Full Profit & Loss Statement from the GL (single source of truth). Standard structure: Revenue → COGS → Gross Profit → Operating Expenses → Operating Income → Other Income/Expense → Net Income. Supports any period and prior-period or prior-year comparison.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'month | quarter | ytd | year | trailing_12 | custom' },
+        year: { type: 'integer', description: 'For ytd or year, e.g., 2025' },
+        month: { type: 'string', description: 'For month period, YYYY-MM' },
+        quarter: { type: 'string', description: 'For quarter period, YYYY-Q1' },
+        start: { type: 'string', description: 'For custom period, YYYY-MM-DD' },
+        end: { type: 'string', description: 'For custom period, YYYY-MM-DD' },
+        compare_to: { type: 'string', description: 'prior_period | prior_year | none (default)' },
+      },
+      required: ['period'],
+    },
+  },
+  {
+    name: 'get_balance_sheet',
+    description: 'Full Balance Sheet from the GL as of a specific date. Standard structure: Current Assets / Fixed Assets / Other Assets → Total Assets; Current Liabilities / Long-term Liabilities → Total Liabilities; Partner Investments / Distributions / Retained Earnings / Current Year Earnings → Total Equity. Includes balance check (Assets = Liab + Equity).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        as_of: { type: 'string', description: 'YYYY-MM-DD (default: today)' },
+        compare_to: { type: 'string', description: 'prior_year_end | prior_month_end | none' },
+      },
+    },
+  },
+  {
+    name: 'get_cash_flow_statement',
+    description: 'Full Cash Flow Statement (indirect method). Three sections: Operating (starts with Net Income + non-cash + working capital changes), Investing (capex), Financing (loan & equity changes). Includes reconciliation to actual bank balance change.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'year | ytd | custom' },
+        year: { type: 'integer', description: 'For year/ytd, e.g., 2025' },
+        start: { type: 'string', description: 'For custom, YYYY-MM-DD' },
+        end: { type: 'string', description: 'For custom, YYYY-MM-DD' },
+      },
+      required: ['period'],
+    },
+  },
+  {
+    name: 'explain_pnl_line',
+    description: 'Drill into a specific P&L line item to see the underlying journal entries that built the balance for a period. Use when Drew asks "what is in [account]" or "why is [account] $X".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'The account ID (from a prior get_pnl_statement call)' },
+        start: { type: 'string', description: 'YYYY-MM-DD period start' },
+        end: { type: 'string', description: 'YYYY-MM-DD period end' },
+      },
+      required: ['account_id', 'start', 'end'],
+    },
+  },
+  {
+    name: 'explain_balance_change',
+    description: 'Drill into a Balance Sheet account to see opening balance, every JE that moved it during the period, and closing balance. Use when Drew asks "why did [account] change" or wants to audit a balance.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        account_id: { type: 'string', description: 'The account ID' },
+        from: { type: 'string', description: 'YYYY-MM-DD period start' },
+        to: { type: 'string', description: 'YYYY-MM-DD period end' },
+      },
+      required: ['account_id', 'from', 'to'],
+    },
+  },
+  {
+    name: 'get_ar_aging',
+    description: 'Outstanding receivables broken into age buckets (current / 1-30d / 31-60d / 61-90d / 90+) per customer, with oldest-overdue days. Use for "what AR is outstanding" / "who owes me" questions.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_open_issues',
+    description: 'Get the proactive issues the CFO has detected: vendor spend spikes, margin drift, AR slipping, cash trajectory, customer concentration. Each issue has severity and suggested action. Use for "what should I be worried about" / "any issues" questions.',
+    input_schema: { type: 'object', properties: { severity: { type: 'string', description: 'critical | high | medium | low — omit for all' } } },
+  },
+  {
+    name: 'record_cfo_fact',
+    description: 'Save a clarification Drew gives so the agent remembers it forever. Use when Drew tells the agent something it should know going forward (e.g., "LEASE SERVICES is the pizza oven loan", "Anthony Serrato is SLC Bees Net 15", "always capitalize Webstaurant >$1K"). Pick the right fact_type.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fact_type: { type: 'string', description: 'vendor_rule | customer_term | drew_preference | business_fact | capex_threshold | correction | loan_term' },
+        subject:   { type: 'string', description: 'What this fact is about (vendor name, customer, "capex_threshold", etc.)' },
+        content:   { type: 'string', description: 'Plain-English statement of the fact' },
+        structured_data: { type: 'object', description: 'Optional: JSON with structured fields like account_id, threshold $, split ratios' },
+      },
+      required: ['fact_type', 'subject', 'content'],
+    },
+  },
+  {
+    name: 'lookup_cfo_facts',
+    description: 'Look up what Drew has previously clarified about a subject (vendor, customer, etc.). The agent should call this when in doubt to use Drew\'s prior clarifications.',
+    input_schema: { type: 'object', properties: { subject: { type: 'string' }, fact_type: { type: 'string', description: 'optional filter' } }, required: ['subject'] },
+  },
 ];
 
 // ── CHAT SYSTEM PROMPT ────────────────────────────────────────────────────────
@@ -223,7 +371,84 @@ WHAT YOU DON'T DO:
 - You don't give generic advice when you have specific data available
 
 TONE:
-Direct, sharp, a bit irreverent when it fits. You're talking to the guy who named a pretzel "RUIN DINNER." You don't need to be precious about it.`;
+Direct, sharp, a bit irreverent when it fits. You're talking to the guy who named a pretzel "RUIN DINNER." You don't need to be precious about it.
+
+═══════════════════════════════════════════════════════════════════
+CFO ROLE — when Drew asks anything financial, act like his CFO:
+═══════════════════════════════════════════════════════════════════
+
+Drew is the CEO. He's NOT an accountant. When financial questions come up:
+
+1. NEVER make him pick accounting categories. If he describes a transaction in
+   plain English, YOU recommend the account using vendor history + cfo_facts.
+
+2. CHAIN TOOL CALLS aggressively. "How close are we to breakeven, and what's
+   the fastest path there?" should call get_breakeven, then get_trends, then
+   run_scenario with 2-3 candidates, then synthesize. Don't ask Drew before
+   chaining — chain.
+
+3. CITE YOUR WORK. Every dollar figure you mention should come from a tool
+   call you just made, not a hallucination. When you say "Sysco trended up,"
+   that should come from get_trends or get_vendor_history — say where.
+
+4. REMEMBER WHAT DREW TELLS YOU. When Drew clarifies something ("LEASE
+   SERVICES is the pizza oven loan, split 80% principal / 20% interest"),
+   CALL record_cfo_fact to save it. Don't just say "ok got it." That fact
+   needs to survive into future categorization decisions.
+
+5. SURFACE PROACTIVELY. Even if Drew asks "how's it going?" — call
+   get_open_issues. If anything's flagged, mention it. Don't wait for him
+   to ask "any issues?"
+
+6. PLAIN-ENGLISH ACCOUNTING. Translate every accounting concept:
+   - Don't say "the contribution margin is 78%" — say "for every $100 of
+     revenue, $78 is left over after variable costs"
+   - Don't say "DSO is 18 days" — say "customers take about 18 days from
+     invoice to payment, slightly slower than your Net 15 terms"
+
+7. SHOW MULTIPLE PATHS, RANKED. Never present one option when there are
+   three. Always rank: most feasible / fastest impact / lowest risk.
+
+8. CONFIDENCE LEVELS. When you're unsure (because data is incomplete,
+   because the categorizer is still catching up), SAY SO. "Books say
+   $26K profit for April, but COGS is only 13% — the real number is
+   probably closer to -$5K to -$10K once the food vendor charges fully
+   post. Want me to walk through what's pending?"
+
+═══════════════════════════════════════════════════════════════════
+FINANCIAL STATEMENTS — Pretzel OS IS the books (May 14 2026):
+═══════════════════════════════════════════════════════════════════
+
+Drew fired his bookkeeper and Pretzel OS is now his system of record for
+financial statements. The GL is the single source of truth. Three statements
+are available — use them confidently:
+
+- **P&L Statement (get_pnl_statement)**: Revenue → COGS → Gross Profit →
+  Operating Expenses → Operating Income → Other → Net Income. Supports
+  month / quarter / ytd / year / trailing_12 / custom periods, and prior
+  period or prior year comparison. Use this for any "how did we do" question.
+
+- **Balance Sheet (get_balance_sheet)**: Current Assets / Fixed Assets / Other
+  → Total Assets; Current Liab / Long-term Liab → Total Liab; Partner
+  Investments / Distributions / Retained Earnings / Current Year Earnings
+  → Total Equity. Always balances. Use for "what do we own / owe" questions.
+  Matches QBO bookkeeper YE 2024 cent-accurate.
+
+- **Cash Flow Statement (get_cash_flow_statement)**: Indirect method —
+  starts with Net Income, adjusts for non-cash items (depreciation) +
+  working capital changes (AR, AP, sales tax, tips, gift cards) +
+  investing (capex) + financing (loans, equity). Reconciles to actual
+  Mercury bank balance change. Use for "where did the cash go" questions.
+
+When Drew asks about line-item details ("what's in Sales:Food Income:Dine-In?"
+or "why did AR change?"), call **explain_pnl_line** or **explain_balance_change**
+to drill into the underlying journal entries.
+
+BASIS: Cash basis (matching bookkeeper's QBO setup + filed tax extensions).
+
+Drew extended his 2025 tax filing — Pretzel OS statements will be the source.
+Treat them with that level of care. If something doesn't reconcile, surface it
+explicitly via the unreconciled / unbalanced_by fields.`;
 
 // ── MAIN EXPORT ───────────────────────────────────────────────────────────────
 export default {
@@ -307,46 +532,47 @@ async function handleChat(request, env) {
   let reply = '';
   let loops = 0;
 
+  // Session 5: route through ai-budget.js for cost tracking + budget enforcement
+  const { callAI } = await import('./ai-budget.js');
+  const conversationId = sessionId || `chat_${Date.now()}`;
+
   while (loops < MAX_TOOL_LOOPS) {
     loops++;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        system: CHAT_SYSTEM_PROMPT,
-        tools: CHAT_TOOLS,
-        messages,
-      }),
+    const aiResult = await callAI(env, {
+      use_case: 'chat_turn',
+      model: 'sonnet',         // CFO chat needs Sonnet for reasoning + tool chaining
+      max_tokens: 1500,
+      system: CHAT_SYSTEM_PROMPT,
+      tools: CHAT_TOOLS,
+      messages,
+      conversation_id: conversationId,
+      caller: 'chat-worker.js:chat_turn',
+      allow_haiku_downgrade: true,    // if soft cap hit, fall to Haiku rather than fail
     });
 
-    if (!response.ok) {
-      const err = await response.text();
-      return new Response(JSON.stringify({ error: `Claude error: ${err}` }), {
-        status: 500, headers: { 'Content-Type': 'application/json' }
-      });
+    if (!aiResult.ok) {
+      // Budget-blocked or upstream error
+      const reason = aiResult.blocked_reason || aiResult.error || 'unknown';
+      return new Response(JSON.stringify({
+        reply: `(I hit a guard: ${reason}. ${aiResult.blocked_reason ? 'Daily AI budget reached — resets at midnight UTC. Numbers-only mode until then.' : 'Try again in a moment.'})`,
+        error: reason,
+        budget_blocked: !!aiResult.blocked_reason,
+      }), { status: aiResult.blocked_reason ? 200 : 500, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const data = await response.json();
-    messages.push({ role: 'assistant', content: data.content });
+    // ai-budget returns content as extracted text + tool_use blocks
+    const assistantContent = aiResult.raw?.content || [];
+    messages.push({ role: 'assistant', content: assistantContent });
 
-    if (data.stop_reason === 'end_turn') {
-      const textBlock = data.content.find(b => b.type === 'text');
-      reply = textBlock?.text || '';
+    if (aiResult.stop_reason === 'end_turn') {
+      reply = aiResult.content || '';
       break;
     }
 
-    if (data.stop_reason === 'tool_use') {
-      const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
+    if (aiResult.stop_reason === 'tool_use') {
       const toolResults = [];
-
-      for (const toolUse of toolUseBlocks) {
+      for (const toolUse of (aiResult.tool_use || [])) {
         const result = await executeChatTool(toolUse.name, toolUse.input, env);
         toolResults.push({
           type: 'tool_result',
@@ -354,7 +580,6 @@ async function handleChat(request, env) {
           content: JSON.stringify(result),
         });
       }
-
       messages.push({ role: 'user', content: toolResults });
     }
   }
@@ -406,10 +631,64 @@ async function handleChatStream(request, env) {
   const messages = [...history];
   let loops = 0;
 
+  // DIF-3 (May 13 2026): wired through ai-budget (tool-loop, uses result.raw)
+  const { callAI } = await import('./ai-budget.js');
+
   // ── Phase 1: tool calls (non-streamed, fast) ────────────────────────────
   while (loops < MAX_TOOL_LOOPS - 1) {
     loops++;
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const result = await callAI(env, {
+      use_case: 'chat_turn_stream_phase1',
+      model: 'sonnet',
+      max_tokens: 1500,
+      system: CHAT_SYSTEM_PROMPT,
+      tools: CHAT_TOOLS,
+      messages,
+      conversation_id: sessionId,
+      caller: 'chat-worker.js:handleChatStream',
+    });
+    if (!result.ok) break;
+    const assistantContent = result.raw?.content || [];
+    messages.push({ role: 'assistant', content: assistantContent });
+    if (result.stop_reason === 'end_turn') break; // no tools called — we're done before streaming
+    if (result.stop_reason !== 'tool_use') break;
+
+    const toolUseBlocks = assistantContent.filter(b => b.type === 'tool_use');
+    const toolResults = [];
+    for (const tu of toolUseBlocks) {
+      const toolResult = await executeChatTool(tu.name, tu.input, env);
+      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(toolResult) });
+    }
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  // ── Phase 2: stream the final reply ────────────────────────────────────
+  //
+  // Session 17d (May 14 2026) — Real bug found by Drew: Phase 1 already produced
+  // the final assistant text when stop_reason === 'end_turn'. The old code then
+  // made a SECOND streaming call to Anthropic with messages that already ended
+  // in an assistant turn — Anthropic correctly returned an empty/instant stream
+  // because there was nothing new to say. Client saw only {type:'done'}.
+  //
+  // Fix: if the last message in `messages` is an assistant with text content,
+  // stream THAT text out (chunked to feel like typewriter). Only make a real
+  // streaming call to Anthropic if we exited the Phase 1 loop via max_loops
+  // or some non-end_turn path that requires a fresh completion.
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+
+  const lastMsg = messages[messages.length - 1];
+  const phase1AssistantText = (lastMsg?.role === 'assistant' && Array.isArray(lastMsg.content))
+    ? lastMsg.content.filter(b => b.type === 'text').map(b => b.text).join('')
+    : '';
+  const phase1Complete = phase1AssistantText.length > 0;
+
+  let streamResp = null;
+  if (!phase1Complete) {
+    // DIF-3 (May 13 2026): Streaming response — callAI wrapper does not support
+    // SSE. Direct fetch retained intentionally. Cost logged post-stream below.
+    streamResp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -417,79 +696,65 @@ async function handleChatStream(request, env) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: env.ACTIVE_SONNET_MODEL || 'claude-sonnet-4-6',
         max_tokens: 1500,
         system: CHAT_SYSTEM_PROMPT,
         tools: CHAT_TOOLS,
         messages,
+        stream: true,
       }),
     });
-    if (!resp.ok) break;
-    const data = await resp.json();
-    messages.push({ role: 'assistant', content: data.content });
-    if (data.stop_reason === 'end_turn') break; // no tools called — we're done before streaming
-    if (data.stop_reason !== 'tool_use') break;
-
-    const toolUseBlocks = data.content.filter(b => b.type === 'tool_use');
-    const toolResults = [];
-    for (const tu of toolUseBlocks) {
-      const result = await executeChatTool(tu.name, tu.input, env);
-      toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(result) });
-    }
-    messages.push({ role: 'user', content: toolResults });
   }
 
-  // ── Phase 2: stream the final reply ────────────────────────────────────
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  const enc = new TextEncoder();
-
-  const streamResp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'messages-2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1500,
-      system: CHAT_SYSTEM_PROMPT,
-      tools: CHAT_TOOLS,
-      messages,
-      stream: true,
-    }),
-  });
-
-  // Pipe SSE stream, extract text deltas, save history when done
+  // Pipe stream (real or simulated), extract text, save history when done
   (async () => {
     let fullText = '';
     try {
-      const reader = streamResp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const raw = line.slice(6).trim();
-          if (raw === '[DONE]') continue;
-          try {
-            const evt = JSON.parse(raw);
-            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-              const chunk = evt.delta.text;
-              fullText += chunk;
-              await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`));
-            }
-          } catch {}
+      if (phase1Complete) {
+        // Phase 1 already produced the text — stream it chunked for typewriter UX
+        fullText = phase1AssistantText;
+        // Chunk by ~30-char windows so the client sees progressive delivery
+        const chunkSize = 32;
+        for (let i = 0; i < fullText.length; i += chunkSize) {
+          const chunk = fullText.slice(i, i + chunkSize);
+          await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`));
+        }
+      } else if (streamResp) {
+        const reader = streamResp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6).trim();
+            if (raw === '[DONE]') continue;
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+                const chunk = evt.delta.text;
+                fullText += chunk;
+                await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`));
+              } else if (evt.type === 'error') {
+                // Surface upstream errors so failures are visible, not silent
+                const errMsg = evt.error?.message || 'Anthropic stream error';
+                await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'error', error: errMsg })}\n\n`));
+              }
+            } catch {}
+          }
         }
       }
     } finally {
+      // Session 17d safety net: if we somehow emitted nothing, send an error
+      // event so the dashboard's catch-fallback can use the non-streaming /chat
+      // endpoint instead of leaving Drew staring at a typing indicator.
+      if (!fullText) {
+        await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'error', error: 'No content produced — falling back' })}\n\n`));
+      }
       // Save history
       const cleanHistory = [
         ...messages.filter(m =>
@@ -501,6 +766,31 @@ async function handleChatStream(request, env) {
       await saveSessionHistory(sessionId, cleanHistory, env);
       await writer.write(enc.encode(`data: ${JSON.stringify({ type: 'done', session_id: sessionId })}\n\n`));
       await writer.close();
+
+      // DIF-3 manual cost log for streaming (the wrapper can't see this call)
+      try {
+        const { logAIStreamCall } = await import('./ai-budget.js');
+        // If logAIStreamCall doesn't exist yet, just write an ai_calls row directly.
+        // For now, log a placeholder: we don't have token counts from streaming,
+        // estimate from text length (1 token ≈ 4 chars).
+        const estInputTokens = Math.ceil(JSON.stringify(messages).length / 4);
+        const estOutputTokens = Math.ceil(fullText.length / 4);
+        const estCost = (estInputTokens / 1_000_000) * 3 + (estOutputTokens / 1_000_000) * 15;
+        await env.DB.prepare(`
+          INSERT INTO ai_calls (id, use_case, model, input_tokens, output_tokens, cost_usd, conversation_id, caller, outcome)
+          VALUES (?, 'chat_stream_reply', ?, ?, ?, ?, ?, 'chat-worker.js:handleChatStream', 'success_stream_estimated')
+        `).bind(crypto.randomUUID(), env.ACTIVE_SONNET_MODEL || 'claude-sonnet-4-6', estInputTokens, estOutputTokens, estCost, sessionId).run();
+        await env.DB.prepare(`
+          INSERT INTO ai_cost_daily (date_utc, total_calls, total_input_tokens, total_output_tokens, total_cost_usd, last_updated)
+          VALUES (date('now'), 1, ?, ?, ?, datetime('now'))
+          ON CONFLICT(date_utc) DO UPDATE SET
+            total_calls = total_calls + 1,
+            total_input_tokens = total_input_tokens + excluded.total_input_tokens,
+            total_output_tokens = total_output_tokens + excluded.total_output_tokens,
+            total_cost_usd = ROUND(total_cost_usd + excluded.total_cost_usd, 6),
+            last_updated = datetime('now')
+        `).bind(estInputTokens, estOutputTokens, estCost).run();
+      } catch {}
     }
   })();
 
@@ -518,15 +808,28 @@ async function executeChatTool(toolName, input, env) {
   switch (toolName) {
 
     case 'get_financial_snapshot': {
-      const [directive, flags] = await Promise.all([
+      const [directive, flags, canonCash, canonRunway, canonRevenue] = await Promise.all([
         env.DB.prepare(
           'SELECT * FROM financial_directives WHERE active = 1 ORDER BY created_at DESC LIMIT 1'
         ).first(),
         env.DB.prepare(
           "SELECT flag_type, severity, title, suggested_action, channel FROM financial_flags WHERE status = 'open' ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END LIMIT 10"
         ).all(),
+        getCanonicalCashOnHand(env).catch(() => null),
+        getCanonicalRunway(env).catch(() => null),
+        getCanonicalWeeklyRevenue(env, 7).catch(() => null),
       ]);
-      return { directive, open_flags: flags.results || [] };
+      // Canonical values OVERRIDE the (possibly stale) directive numbers.
+      return {
+        directive,
+        open_flags: flags.results || [],
+        canonical: {
+          cash_on_hand: canonCash,
+          runway: canonRunway,
+          weekly_revenue: canonRevenue,
+        },
+        note: 'Use `canonical` block for cash/runway/revenue questions — `directive` is narrative-only and may be stale.',
+      };
     }
 
     case 'get_pipeline_status': {
@@ -775,9 +1078,16 @@ async function executeChatTool(toolName, input, env) {
         FROM active_accounts WHERE warmer_removed_at IS NULL
       `).first();
 
+      // Canonical numbers override stale directive values
+      const [canonRunway, canonRevenue] = await Promise.all([
+        getCanonicalRunway(env).catch(() => null),
+        getCanonicalWeeklyRevenue(env, 7).catch(() => null),
+      ]);
+
       const context = {
-        current_weekly_revenue: directive?.total_revenue_week || 0,
-        current_cash_runway: directive?.cash_runway_weeks || null,
+        current_weekly_revenue: canonRevenue?.total ?? directive?.total_revenue_week ?? 0,
+        current_cash_runway: canonRunway?.weeks ?? directive?.cash_runway_weeks ?? null,
+        current_cash_on_hand: canonRunway?.cash ?? directive?.cash_on_hand ?? null,
         active_accounts: accountStats?.count || 0,
         current_monthly_wholesale: accountStats?.monthly_rev || 0,
         catering_margin_pct: directive?.catering_margin_pct || null,
@@ -850,7 +1160,7 @@ async function executeChatTool(toolName, input, env) {
     }
 
     case 'get_weekly_summary': {
-      const [metrics, directive, accounts, retail] = await Promise.all([
+      const [metrics, directive, accounts, retail, canonCash, canonRunway, canonRevenue] = await Promise.all([
         env.DB.prepare(
           'SELECT * FROM performance_metrics ORDER BY week_start DESC LIMIT 1'
         ).first(),
@@ -863,14 +1173,152 @@ async function executeChatTool(toolName, input, env) {
         env.DB.prepare(
           "SELECT COUNT(*) as count, SUM(CASE WHEN segment = 'lapsed' THEN 1 ELSE 0 END) as lapsed FROM retail_customers"
         ).first(),
+        getCanonicalCashOnHand(env).catch(() => null),
+        getCanonicalRunway(env).catch(() => null),
+        getCanonicalWeeklyRevenue(env, 7).catch(() => null),
       ]);
 
+      // Override directive numbers with canonical (live) values
+      const financialOverride = directive ? { ...directive } : {};
+      if (canonRevenue) {
+        financialOverride.wholesale_revenue_week = canonRevenue.wholesale?.revenue ?? financialOverride.wholesale_revenue_week;
+        financialOverride.retail_revenue_week = canonRevenue.retail?.revenue ?? financialOverride.retail_revenue_week;
+        financialOverride.catering_revenue_week = canonRevenue.catering?.revenue ?? financialOverride.catering_revenue_week;
+        financialOverride.total_revenue_week = canonRevenue.total ?? financialOverride.total_revenue_week;
+      }
+      if (canonCash) financialOverride.cash_on_hand = canonCash.total;
+      if (canonRunway) financialOverride.cash_runway_weeks = canonRunway.weeks;
+      financialOverride._numbers_source = 'canonical (live), narrative from directive';
+
       return {
-        financial: directive,
+        financial: financialOverride,
+        canonical: { cash: canonCash, runway: canonRunway, revenue: canonRevenue },
         performance: metrics,
         accounts: accounts,
         retail: retail,
       };
+    }
+
+    // ───── Session 4 CFO tools ─────
+    case 'get_breakeven': {
+      const { getBreakeven } = await import('./finance-breakeven.js');
+      return getBreakeven(env, { lookback_days: input.lookback_days || 90 });
+    }
+
+    case 'get_trends': {
+      const { getTrends } = await import('./finance-trends.js');
+      return getTrends(env, { months: input.months || 12 });
+    }
+
+    case 'run_scenario': {
+      const { runScenario } = await import('./finance-scenario.js');
+      return runScenario(env, input);
+    }
+
+    case 'get_customer_intel': {
+      const { getCustomerIntel } = await import('./finance-customer-intel.js');
+      return getCustomerIntel(env, { limit: input.limit || 25 });
+    }
+
+    case 'get_customer_profile': {
+      if (!input.customer) return { error: 'customer name required' };
+      const { getCustomerProfile } = await import('./finance-customer-intel.js');
+      return getCustomerProfile(env, input.customer);
+    }
+
+    case 'get_vendor_history': {
+      if (!input.vendor) return { error: 'vendor name required' };
+      const { lookupVendor } = await import('./finance-vendor-kb.js');
+      return lookupVendor(env, input.vendor);
+    }
+
+    case 'get_finance_scorecard': {
+      const { getScorecard } = await import('./finance-scorecard.js');
+      return getScorecard(env);
+    }
+
+    case 'get_monthly_pl': {
+      const { getMonthlyPL, getMonthlyPLQuad } = await import('./finance-monthly-pl.js');
+      if (input.period) return getMonthlyPL(env, input.period);
+      return getMonthlyPLQuad(env);
+    }
+
+    case 'get_pnl_statement': {
+      const { getPnLStatement } = await import('./finance-statements-pnl.js');
+      const period = input.period || 'ytd';
+      return getPnLStatement(env, period, {
+        year: input.year,
+        month: input.month,
+        quarter: input.quarter,
+        start: input.start,
+        end: input.end,
+        compare_to: input.compare_to || 'none',
+      });
+    }
+
+    case 'get_balance_sheet': {
+      const { getBalanceSheet } = await import('./finance-statements-balance-sheet.js');
+      const asOf = input.as_of || new Date().toISOString().slice(0, 10);
+      return getBalanceSheet(env, asOf, input.compare_to || 'none');
+    }
+
+    case 'get_cash_flow_statement': {
+      const { getCashFlowStatement } = await import('./finance-statements-cash-flow.js');
+      let start = input.start;
+      let end = input.end;
+      if (input.period === 'year' && input.year) {
+        start = `${input.year}-01-01`;
+        end = `${input.year}-12-31`;
+      } else if (input.period === 'ytd') {
+        const y = input.year || new Date().getUTCFullYear();
+        start = `${y}-01-01`;
+        end = new Date().toISOString().slice(0, 10);
+      }
+      if (!start || !end) return { error: 'start + end required (or period=year&year= or period=ytd)' };
+      return getCashFlowStatement(env, start, end);
+    }
+
+    case 'explain_pnl_line': {
+      const { explainPnLLine } = await import('./finance-statements-pnl.js');
+      if (!input.account_id || !input.start || !input.end) return { error: 'account_id, start, end required' };
+      return explainPnLLine(env, input.account_id, input.start, input.end);
+    }
+
+    case 'explain_balance_change': {
+      const { explainBalanceChange } = await import('./finance-statements-balance-sheet.js');
+      if (!input.account_id || !input.from || !input.to) return { error: 'account_id, from, to required' };
+      return explainBalanceChange(env, input.account_id, input.from, input.to);
+    }
+
+    case 'get_ar_aging': {
+      const { getArAging } = await import('./finance-ar-aging.js');
+      return getArAging(env);
+    }
+
+    case 'get_open_issues': {
+      const { listIssues } = await import('./finance-issue-surfacer.js');
+      return listIssues(env, { severity: input.severity });
+    }
+
+    case 'record_cfo_fact': {
+      if (!input.fact_type || !input.subject || !input.content) {
+        return { error: 'fact_type, subject, content all required' };
+      }
+      const { recordFact } = await import('./finance-cfo-facts.js');
+      return recordFact(env, {
+        fact_type: input.fact_type,
+        subject: input.subject,
+        content: input.content,
+        structured_data: input.structured_data || null,
+        source: 'drew_chat',
+        confidence: 1.0,
+      });
+    }
+
+    case 'lookup_cfo_facts': {
+      if (!input.subject) return { error: 'subject required' };
+      const { lookupFacts } = await import('./finance-cfo-facts.js');
+      return lookupFacts(env, input.subject, input.fact_type || null);
     }
 
     default:

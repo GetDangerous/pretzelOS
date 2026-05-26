@@ -10,13 +10,16 @@
  */
 
 import { loadBrain } from './brain-loader.js';
+import { callAI } from './ai-budget.js';
 
 export default {
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(scanAndEnqueue(env, '2h'));
-    // Process any auto-send replies whose 2h delay has elapsed
-    ctx.waitUntil(processAutoSends(env));
+    return Promise.all([
+      scanAndEnqueue(env, '2h'),
+      // Process any auto-send replies whose 2h delay has elapsed
+      processAutoSends(env),
+    ]);
   },
 
   async queue(batch, env) {
@@ -90,6 +93,10 @@ export default {
         const body = payload.body || payload.message || payload.text || '';
         if (!phone || !body) {
           res = json({ error: 'Missing phone or body' }, 400);
+        } else if (isTestSmsPayload(phone, body)) {
+          // Staff-testing pings and fake numbers — don't store as a real reply.
+          console.log(`[SMS Webhook] Test marker dropped: phone=${phone.slice(0,6)}*** body="${body.slice(0, 40)}"`);
+          res = json({ received: true, dropped: 'test_marker' });
         } else {
           // Find the venue by phone number
           const venue = await env.DB.prepare(
@@ -151,6 +158,30 @@ export default {
   }
 };
 
+// ── TEST-PAYLOAD FILTER ──────────────────────────────────────────────────────
+// Staff sometimes fires curl tests at /sms/webhook with fake numbers + bodies
+// like "test sms webhook" / "test123" / "test msg". Those used to land in the
+// action queue and pollute Drew's review. This guard drops them at ingest.
+const TEST_SMS_NUMBERS = new Set([
+  '8019169999',  // historical staff test number
+  '5555555555',
+  '1234567890',
+  '0000000000',
+]);
+function isTestSmsPayload(phone, body) {
+  const p = (phone || '').replace(/^1/, '');
+  if (TEST_SMS_NUMBERS.has(p)) return true;
+  const b = (body || '').trim().toLowerCase();
+  if (!b) return false;
+  if (b === 'test' || b === 'test123' || b === 'testing') return true;
+  if (b.startsWith('test sms')) return true;
+  if (b.startsWith('test msg')) return true;
+  if (b.startsWith('test webhook')) return true;
+  // A body that is literally only "test" plus digits/spaces
+  if (/^test[\s\d]*$/i.test(b)) return true;
+  return false;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // SCANNER — every 15 min, no Claude calls
 // ══════════════════════════════════════════════════════════════════════════════
@@ -192,8 +223,9 @@ async function scanAndEnqueue(env, window = '2h') {
       const fromAddress = extractEmail(fromHeader);
       if (fromAddress === env.FROM_EMAIL || fromAddress === env.DREW_EMAIL) continue;
 
-      // Match to an outreach thread
-      const match = await matchThread(message.threadId, env);
+      // Match to an outreach thread (fallback: match by sender email/domain
+      // so replies from a different address than the one we emailed still link)
+      const match = await matchThread(message.threadId, env, fromAddress);
       if (!match) continue;
 
       // Extract body
@@ -321,7 +353,7 @@ Return JSON only:
 
   try {
     let data = await workerAI(env, prompt);
-    if (!data) data = await claude(env, 'claude-haiku-4-5-20251001', 250, prompt);
+    if (!data) data = await claude(env, 'haiku', 250, prompt);  // DIF-3: model key not literal id
     return JSON.parse(data.replace(/```json\n?|\n?```/g, '').trim());
   } catch {
     return { classification: 'needs_info', confidence: 0.5, sentiment: 'neutral',
@@ -381,7 +413,7 @@ RULES:
 Return JSON only: {"subject":"Re: [original subject]","body":"..."}`;
 
   try {
-    const data = await claude(env, 'claude-sonnet-4-6', 400, prompt);
+    const data = await claude(env, 'sonnet', 400, prompt);  // DIF-3: model key not literal id
     return JSON.parse(data.replace(/```json\n?|\n?```/g, '').trim());
   } catch { return null; }
 }
@@ -513,8 +545,8 @@ async function captureSignal(match, classification, daysToReply, env) {
 
 // ── THREAD MATCHING ───────────────────────────────────────────────────────────
 
-async function matchThread(threadId, env) {
-  // Check wholesale outreach logs
+async function matchThread(threadId, env, fromEmail) {
+  // 1) Primary: match by Gmail thread id (wholesale)
   const w = await env.DB.prepare(`
     SELECT o.id as log_id, o.venue_id, o.sequence_step, o.sent_at,
            o.subject as original_subject, o.body as original_body,
@@ -527,8 +559,8 @@ async function matchThread(threadId, env) {
   `).bind(threadId).first();
   if (w) return w;
 
-  // Check catering outreach logs
-  return await env.DB.prepare(`
+  // 2) Primary: match by Gmail thread id (catering)
+  const c = await env.DB.prepare(`
     SELECT o.id as log_id, o.lead_id, o.sequence_step, o.sent_at,
            o.subject as original_subject, o.body as original_body,
            cl.name as venue_name, cl.industry, 'catering' as channel,
@@ -538,6 +570,93 @@ async function matchThread(threadId, env) {
     WHERE o.gmail_thread_id=? AND o.direction='out'
     ORDER BY o.sent_at DESC LIMIT 1
   `).bind(threadId).first();
+  if (c) return c;
+
+  // 3) Fallback: thread id didn't match. Try to link by sender.
+  //    This catches replies that come from a different address than we emailed
+  //    (e.g. we wrote to CustomerService@x.org, a human replied from jane@x.org).
+  if (!fromEmail) return null;
+  const email = String(fromEmail).toLowerCase();
+  const domain = email.includes('@') ? email.split('@')[1] : null;
+  if (!domain) return null;
+
+  // Guard: skip generic mail providers where domain match is meaningless
+  const GENERIC = new Set(['gmail.com','yahoo.com','hotmail.com','outlook.com',
+    'icloud.com','me.com','aol.com','proton.me','protonmail.com','msn.com',
+    'live.com','comcast.net','verizon.net','mail.com']);
+  const domainMatchAllowed = !GENERIC.has(domain);
+
+  // 3a) Wholesale: exact email match on to_address, then domain match
+  const wExact = await env.DB.prepare(`
+    SELECT o.id as log_id, o.venue_id, o.sequence_step, o.sent_at,
+           o.subject as original_subject, o.body as original_body,
+           v.name as venue_name, v.category, 'wholesale' as channel,
+           ap.version as prompt_version
+    FROM outreach_logs o JOIN venues v ON v.id=o.venue_id
+    LEFT JOIN agent_prompts ap ON ap.agent_name='outreach_email' AND ap.active=1
+    WHERE LOWER(o.to_address)=? AND o.direction='out'
+      AND o.sent_at > datetime('now','-60 days')
+    ORDER BY o.sent_at DESC LIMIT 1
+  `).bind(email).first();
+  if (wExact) {
+    console.log(`[Reply Scanner] Matched wholesale by exact from_email: ${email}`);
+    return wExact;
+  }
+
+  if (domainMatchAllowed) {
+    const wDomain = await env.DB.prepare(`
+      SELECT o.id as log_id, o.venue_id, o.sequence_step, o.sent_at,
+             o.subject as original_subject, o.body as original_body,
+             v.name as venue_name, v.category, 'wholesale' as channel,
+             ap.version as prompt_version
+      FROM outreach_logs o JOIN venues v ON v.id=o.venue_id
+      LEFT JOIN agent_prompts ap ON ap.agent_name='outreach_email' AND ap.active=1
+      WHERE LOWER(o.to_address) LIKE ? AND o.direction='out'
+        AND o.sent_at > datetime('now','-60 days')
+      ORDER BY o.sent_at DESC LIMIT 1
+    `).bind('%@' + domain).first();
+    if (wDomain) {
+      console.log(`[Reply Scanner] Matched wholesale by domain: ${domain} (from ${email})`);
+      return wDomain;
+    }
+  }
+
+  // 3b) Catering: exact email match on to_address, then domain match
+  const cExact = await env.DB.prepare(`
+    SELECT o.id as log_id, o.lead_id, o.sequence_step, o.sent_at,
+           o.subject as original_subject, o.body as original_body,
+           cl.name as venue_name, cl.industry, 'catering' as channel,
+           ap.version as prompt_version
+    FROM catering_outreach_logs o JOIN catering_leads cl ON cl.id=o.lead_id
+    LEFT JOIN agent_prompts ap ON ap.agent_name='catering_email' AND ap.active=1
+    WHERE LOWER(o.to_address)=? AND o.direction='out'
+      AND o.sent_at > datetime('now','-60 days')
+    ORDER BY o.sent_at DESC LIMIT 1
+  `).bind(email).first();
+  if (cExact) {
+    console.log(`[Reply Scanner] Matched catering by exact from_email: ${email}`);
+    return cExact;
+  }
+
+  if (domainMatchAllowed) {
+    const cDomain = await env.DB.prepare(`
+      SELECT o.id as log_id, o.lead_id, o.sequence_step, o.sent_at,
+             o.subject as original_subject, o.body as original_body,
+             cl.name as venue_name, cl.industry, 'catering' as channel,
+             ap.version as prompt_version
+      FROM catering_outreach_logs o JOIN catering_leads cl ON cl.id=o.lead_id
+      LEFT JOIN agent_prompts ap ON ap.agent_name='catering_email' AND ap.active=1
+      WHERE LOWER(o.to_address) LIKE ? AND o.direction='out'
+        AND o.sent_at > datetime('now','-60 days')
+      ORDER BY o.sent_at DESC LIMIT 1
+    `).bind('%@' + domain).first();
+    if (cDomain) {
+      console.log(`[Reply Scanner] Matched catering by domain: ${domain} (from ${email})`);
+      return cDomain;
+    }
+  }
+
+  return null;
 }
 
 // ── UPDATE LIVE KV STATE ──────────────────────────────────────────────────────
@@ -721,10 +840,13 @@ async function getGmailToken(env) {
   return access_token;
 }
 
+// RFC 2047 encode subject when it contains non-ASCII
+function encodeSubj(s) { return /^[\x00-\x7F]*$/.test(s) ? s : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(s)))}?=`; }
+
 async function sendGmail(env, { to, subject, body }) {
   const token = await getGmailToken(env);
   const raw = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
+    `Subject: ${encodeSubj(subject)}`, 'Content-Type: text/plain; charset=utf-8', '', body].join('\r\n');
   const bytes1 = new TextEncoder().encode(raw);
   const binString1 = Array.from(bytes1, b => String.fromCodePoint(b)).join('');
   const encoded = btoa(binString1).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -738,7 +860,7 @@ async function sendGmail(env, { to, subject, body }) {
 async function sendGmailReply(env, { to, subject, body, threadId }) {
   const token = await getGmailToken(env);
   const raw = [`To: ${to}`, `From: Drew <${env.FROM_EMAIL}>`,
-    `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8',
+    `Subject: ${encodeSubj(subject)}`, 'Content-Type: text/plain; charset=utf-8',
     `In-Reply-To: ${threadId}`, `References: ${threadId}`, '', body].join('\r\n');
   const bytes2 = new TextEncoder().encode(raw);
   const binString2 = Array.from(bytes2, b => String.fromCodePoint(b)).join('');
@@ -769,20 +891,18 @@ async function workerAI(env, prompt) {
 }
 
 async function claude(env, model, maxTokens, prompt) {
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model, max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+  // DIF-3 (May 13 2026): wired through ai-budget
+  // Use case derived from model so haiku vs sonnet calls are tracked separately.
+  const isHaiku = /haiku/i.test(model);
+  const result = await callAI(env, {
+    use_case: isHaiku ? 'reply_handler_haiku_categorize' : 'reply_handler_sonnet_draft',
+    model,
+    caller: 'reply-handler-worker.js',
+    max_tokens: maxTokens,
+    messages: [{ role: 'user', content: prompt }],
   });
-  const data = await resp.json();
-  return data.content?.[0]?.text || '';
+  if (!result.ok) return '';
+  return result.content || '';
 }
 
 // ── UTILS ─────────────────────────────────────────────────────────────────────

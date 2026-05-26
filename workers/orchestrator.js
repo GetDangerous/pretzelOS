@@ -51,7 +51,8 @@ async function stepStart(env, runId, fromAgent, toAgent, task) {
   await env.DB.prepare(`
     INSERT INTO agent_messages (id, run_id, from_agent, to_agent, task, status, created_at)
     VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))
-  `).bind(id, runId, fromAgent, toAgent, task).run().catch(() => {});
+  `).bind(id, runId, fromAgent, toAgent, task).run()
+    .catch(e => console.error('[orchestrator] stepStart INSERT failed:', id, fromAgent, '->', toAgent, e.message));
   return id;
 }
 
@@ -61,29 +62,37 @@ async function stepEnd(env, stepId, runId, success, durationMs, error) {
     UPDATE agent_messages
     SET status = ?, duration_ms = ?, error = ?, completed_at = datetime('now')
     WHERE id = ?
-  `).bind(success ? 'completed' : 'failed', durationMs, error || null, stepId).run().catch(() => {});
+  `).bind(success ? 'completed' : 'failed', durationMs, error || null, stepId).run()
+    .catch(e => console.error('[orchestrator] stepEnd UPDATE failed:', stepId, e.message));
 
   if (success) {
     await env.DB.prepare(
       `UPDATE orchestrator_runs SET steps_completed = steps_completed + 1 WHERE id = ?`
-    ).bind(runId).run().catch(() => {});
+    ).bind(runId).run().catch(e => console.error('[orchestrator] steps_completed++ failed:', runId, e.message));
   } else {
     await env.DB.prepare(
       `UPDATE orchestrator_runs SET steps_failed = steps_failed + 1 WHERE id = ?`
-    ).bind(runId).run().catch(() => {});
+    ).bind(runId).run().catch(e => console.error('[orchestrator] steps_failed++ failed:', runId, e.message));
   }
 }
 
-// Run one agent step with full logging
+const STEP_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per step max
+
+// Run one agent step with full logging + timeout
 async function runStep(env, runId, { fromAgent, toAgent, task, fn }) {
   const stepId = await stepStart(env, runId, fromAgent, toAgent, task);
   const t0 = Date.now();
   try {
     const ctx = fakeCtx();
-    await fn(fakeScheduled(), env, ctx);
-    // Await any promises the agent registered via waitUntil
-    const pending = ctx.getPromises();
-    if (pending.length) await Promise.all(pending);
+    const execution = (async () => {
+      await fn(fakeScheduled(), env, ctx);
+      const pending = ctx.getPromises();
+      if (pending.length) await Promise.all(pending);
+    })();
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Step timed out after ${STEP_TIMEOUT_MS / 1000}s`)), STEP_TIMEOUT_MS)
+    );
+    await Promise.race([execution, timeout]);
     await stepEnd(env, stepId, runId, true, Date.now() - t0, null);
     return true;
   } catch (err) {
@@ -121,11 +130,16 @@ const PIPELINES = {
 // ── Main pipeline runner ─────────────────────────────────────────────────────
 
 async function runPipeline(runId, type, env) {
+  // Auto-cleanup: mark any runs stuck in "running" for 30+ min as timed_out
+  await env.DB.prepare(
+    `UPDATE orchestrator_runs SET status = 'timed_out', completed_at = datetime('now') WHERE status = 'running' AND created_at < datetime('now', '-30 minutes') AND id != ?`
+  ).bind(runId).run().catch(e => console.error('[orchestrator] timed_out cleanup failed:', e.message));
+
   const steps = PIPELINES[type] || PIPELINES.outreach_pipeline;
 
   await env.DB.prepare(
     `UPDATE orchestrator_runs SET steps_total = ? WHERE id = ?`
-  ).bind(steps.length, runId).run().catch(() => {});
+  ).bind(steps.length, runId).run().catch(e => console.error('[orchestrator] steps_total UPDATE failed:', runId, e.message));
 
   let failures = 0;
   for (const step of steps) {
@@ -139,7 +153,7 @@ async function runPipeline(runId, type, env) {
     UPDATE orchestrator_runs
     SET status = ?, completed_at = datetime('now')
     WHERE id = ?
-  `).bind(finalStatus, runId).run().catch(() => {});
+  `).bind(finalStatus, runId).run().catch(e => console.error(`[Orchestrator] Failed to update run status: ${e.message}`));
 
   console.log(`[Orchestrator] Run ${runId} (${type}) finished: ${finalStatus} — ${steps.length - failures}/${steps.length} steps ok`);
 }
@@ -191,6 +205,22 @@ export default {
       return new Response(JSON.stringify({ run, steps: steps || [] }), {
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // POST /orchestrator/cleanup — force-clean stuck runs + stuck steps
+    if (path === '/orchestrator/cleanup' && request.method === 'POST') {
+      // Mark any run stuck "running" for 10+ min as failed
+      const runsRes = await env.DB.prepare(
+        `UPDATE orchestrator_runs SET status = 'failed', completed_at = datetime('now') WHERE status = 'running' AND created_at < datetime('now', '-10 minutes')`
+      ).run();
+      // Mark any step still "running" as failed (no completed_at yet)
+      const stepsRes = await env.DB.prepare(
+        `UPDATE agent_messages SET status = 'failed', completed_at = datetime('now'), error = COALESCE(error, 'Force-cleaned: run was stuck') WHERE status = 'running' AND created_at < datetime('now', '-10 minutes')`
+      ).run();
+      return new Response(JSON.stringify({
+        runs_cleaned: runsRes.meta?.changes || 0,
+        steps_cleaned: stepsRes.meta?.changes || 0,
+      }), { headers: { 'Content-Type': 'application/json' } });
     }
 
     // GET /orchestrator/active — currently running run (if any)

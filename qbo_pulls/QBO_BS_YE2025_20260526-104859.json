@@ -1,0 +1,1001 @@
+{
+  "Header": {
+    "Time": "2026-05-26T09:49:00-07:00",
+    "ReportName": "BalanceSheet",
+    "ReportBasis": "Cash",
+    "StartPeriod": "2025-12-31",
+    "EndPeriod": "2025-12-31",
+    "SummarizeColumnsBy": "Total",
+    "Currency": "USD",
+    "Option": [
+      {
+        "Name": "AccountingStandard",
+        "Value": "GAAP"
+      },
+      {
+        "Name": "NoReportData",
+        "Value": "false"
+      }
+    ]
+  },
+  "Columns": {
+    "Column": [
+      {
+        "ColTitle": "",
+        "ColType": "Account",
+        "MetaData": [
+          {
+            "Name": "ColKey",
+            "Value": "account"
+          }
+        ]
+      },
+      {
+        "ColTitle": "Total",
+        "ColType": "Money",
+        "MetaData": [
+          {
+            "Name": "ColKey",
+            "Value": "total"
+          }
+        ]
+      }
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "ASSETS"
+            },
+            {
+              "value": ""
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Current Assets"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Bank Accounts"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "ColData": [
+                            {
+                              "value": "Mercury Checking (0118) - 1",
+                              "id": "141"
+                            },
+                            {
+                              "value": "4004.82"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Mercury Savings (5450) - 1",
+                              "id": "142"
+                            },
+                            {
+                              "value": "7899.23"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Bank Accounts"
+                        },
+                        {
+                          "value": "11904.05"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "BankAccounts"
+                  },
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Other Current Assets"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "Header": {
+                            "ColData": [
+                              {
+                                "value": "Clearing Accounts",
+                                "id": "1150040026"
+                              },
+                              {
+                                "value": ""
+                              }
+                            ]
+                          },
+                          "Rows": {
+                            "Row": [
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Cash Clearing",
+                                    "id": "1150040006"
+                                  },
+                                  {
+                                    "value": "8367.39"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Credit Card Clearing",
+                                    "id": "1150040002"
+                                  },
+                                  {
+                                    "value": "1543.20"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Doordash Clearing",
+                                    "id": "1150040003"
+                                  },
+                                  {
+                                    "value": "1844.27"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Grubhub Clearing",
+                                    "id": "1150040013"
+                                  },
+                                  {
+                                    "value": "0.00"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Square Clearing",
+                                    "id": "1150040030"
+                                  },
+                                  {
+                                    "value": "0.00"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "UberEats Clearing",
+                                    "id": "1150040012"
+                                  },
+                                  {
+                                    "value": "182.39"
+                                  }
+                                ],
+                                "type": "Data"
+                              }
+                            ]
+                          },
+                          "Summary": {
+                            "ColData": [
+                              {
+                                "value": "Total Clearing Accounts"
+                              },
+                              {
+                                "value": "11937.25"
+                              }
+                            ]
+                          },
+                          "type": "Section"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Payments to deposit",
+                              "id": "56"
+                            },
+                            {
+                              "value": "0.00"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Payroll Clearing",
+                              "id": "173"
+                            },
+                            {
+                              "value": "553.70"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Prepaid expenses",
+                              "id": "60"
+                            },
+                            {
+                              "value": "9764.01"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Reimbursement receivable",
+                              "id": "1150040037"
+                            },
+                            {
+                              "value": "123400.74"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Other Current Assets"
+                        },
+                        {
+                          "value": "145655.70"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "OtherCurrentAssets"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Current Assets"
+                  },
+                  {
+                    "value": "157559.75"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "CurrentAssets"
+            },
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Fixed Assets"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "ColData": [
+                      {
+                        "value": "Accumulated amortization",
+                        "id": "9"
+                      },
+                      {
+                        "value": "-2363.00"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Accumulated depreciation",
+                        "id": "10"
+                      },
+                      {
+                        "value": "-57784.00"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Branding",
+                        "id": "155"
+                      },
+                      {
+                        "value": "0.00"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Furniture & Fixtures",
+                        "id": "28"
+                      },
+                      {
+                        "value": "6010.92"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Leasehold Improvements",
+                        "id": "15"
+                      },
+                      {
+                        "value": "318690.63"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Long-term office equipment",
+                        "id": "48"
+                      },
+                      {
+                        "value": "0.00"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Restaurant equipment, tools, and Machinery",
+                        "id": "77"
+                      },
+                      {
+                        "value": "198072.61"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Signage",
+                        "id": "156"
+                      },
+                      {
+                        "value": "8970.01"
+                      }
+                    ],
+                    "type": "Data"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Fixed Assets"
+                  },
+                  {
+                    "value": "471597.17"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "FixedAssets"
+            },
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Other Assets"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "ColData": [
+                      {
+                        "value": "Security deposits",
+                        "id": "70"
+                      },
+                      {
+                        "value": "20932.49"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Startup & organizational costs",
+                        "id": "73"
+                      },
+                      {
+                        "value": "70899.73"
+                      }
+                    ],
+                    "type": "Data"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Other Assets"
+                  },
+                  {
+                    "value": "91832.22"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "OtherAssets"
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {
+              "value": "TOTAL ASSETS"
+            },
+            {
+              "value": "720989.14"
+            }
+          ]
+        },
+        "type": "Section",
+        "group": "TotalAssets"
+      },
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "LIABILITIES AND EQUITY"
+            },
+            {
+              "value": ""
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Liabilities"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Current Liabilities"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "Header": {
+                            "ColData": [
+                              {
+                                "value": "Credit Cards"
+                              },
+                              {
+                                "value": ""
+                              }
+                            ]
+                          },
+                          "Rows": {
+                            "Row": [
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Mercury Credit (0000) - 1",
+                                    "id": "143"
+                                  },
+                                  {
+                                    "value": "25.27"
+                                  }
+                                ],
+                                "type": "Data"
+                              }
+                            ]
+                          },
+                          "Summary": {
+                            "ColData": [
+                              {
+                                "value": "Total Credit Cards"
+                              },
+                              {
+                                "value": "25.27"
+                              }
+                            ]
+                          },
+                          "type": "Section",
+                          "group": "CreditCards"
+                        },
+                        {
+                          "Header": {
+                            "ColData": [
+                              {
+                                "value": "Other Current Liabilities"
+                              },
+                              {
+                                "value": ""
+                              }
+                            ]
+                          },
+                          "Rows": {
+                            "Row": [
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Gift Card Liability",
+                                    "id": "1150040004"
+                                  },
+                                  {
+                                    "value": "1860.30"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Note Payable - Toast",
+                                    "id": "152"
+                                  },
+                                  {
+                                    "value": "0.00"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "Header": {
+                                  "ColData": [
+                                    {
+                                      "value": "Payroll Liabilities",
+                                      "id": "58"
+                                    },
+                                    {
+                                      "value": ""
+                                    }
+                                  ]
+                                },
+                                "Rows": {
+                                  "Row": [
+                                    {
+                                      "ColData": [
+                                        {
+                                          "value": "Manual Checks",
+                                          "id": "185"
+                                        },
+                                        {
+                                          "value": "0.00"
+                                        }
+                                      ],
+                                      "type": "Data"
+                                    },
+                                    {
+                                      "ColData": [
+                                        {
+                                          "value": "Payroll tax to pay",
+                                          "id": "117"
+                                        },
+                                        {
+                                          "value": "0.00"
+                                        }
+                                      ],
+                                      "type": "Data"
+                                    }
+                                  ]
+                                },
+                                "Summary": {
+                                  "ColData": [
+                                    {
+                                      "value": "Total Payroll Liabilities"
+                                    },
+                                    {
+                                      "value": "0.00"
+                                    }
+                                  ]
+                                },
+                                "type": "Section"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Payroll Payable",
+                                    "id": "1150040024"
+                                  },
+                                  {
+                                    "value": "5050.00"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Prepaid Orders",
+                                    "id": "1150040010"
+                                  },
+                                  {
+                                    "value": "272.82"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Sales tax to pay",
+                                    "id": "69"
+                                  },
+                                  {
+                                    "value": "19934.76"
+                                  }
+                                ],
+                                "type": "Data"
+                              },
+                              {
+                                "ColData": [
+                                  {
+                                    "value": "Tips Payable",
+                                    "id": "1150040005"
+                                  },
+                                  {
+                                    "value": "1550.59"
+                                  }
+                                ],
+                                "type": "Data"
+                              }
+                            ]
+                          },
+                          "Summary": {
+                            "ColData": [
+                              {
+                                "value": "Total Other Current Liabilities"
+                              },
+                              {
+                                "value": "28668.47"
+                              }
+                            ]
+                          },
+                          "type": "Section",
+                          "group": "OtherCurrentLiabilities"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Current Liabilities"
+                        },
+                        {
+                          "value": "28693.74"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "CurrentLiabilities"
+                  },
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Long-Term Liabilities"
+                        },
+                        {
+                          "value": ""
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "ColData": [
+                            {
+                              "value": "N/P LEAF Funding Comm Kitchen - 2",
+                              "id": "171"
+                            },
+                            {
+                              "value": "20730.70"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "N/P LEAF funding Commercial Kitchen Supply",
+                              "id": "168"
+                            },
+                            {
+                              "value": "17713.34"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "N/P LEAF Funding Kemper Bakery",
+                              "id": "167"
+                            },
+                            {
+                              "value": "20469.82"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "N/P LEAF funding Pizza Ovens",
+                              "id": "169"
+                            },
+                            {
+                              "value": "48284.86"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Note Payable - Drew & Lindsay",
+                              "id": "158"
+                            },
+                            {
+                              "value": "20975.00"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Note Payable - Todd and Amanda",
+                              "id": "161"
+                            },
+                            {
+                              "value": "18367.51"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Long-Term Liabilities"
+                        },
+                        {
+                          "value": "146541.23"
+                        }
+                      ]
+                    },
+                    "type": "Section",
+                    "group": "LongTermLiabilities"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Liabilities"
+                  },
+                  {
+                    "value": "175234.97"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "Liabilities"
+            },
+            {
+              "Header": {
+                "ColData": [
+                  {
+                    "value": "Equity"
+                  },
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              "Rows": {
+                "Row": [
+                  {
+                    "ColData": [
+                      {
+                        "value": "Partner distributions",
+                        "id": "53"
+                      },
+                      {
+                        "value": "-18.00"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "Header": {
+                      "ColData": [
+                        {
+                          "value": "Partner investments",
+                          "id": "54"
+                        },
+                        {
+                          "value": "1632.49"
+                        }
+                      ]
+                    },
+                    "Rows": {
+                      "Row": [
+                        {
+                          "ColData": [
+                            {
+                              "value": "Drew and Lindsay",
+                              "id": "159"
+                            },
+                            {
+                              "value": "822201.29"
+                            }
+                          ],
+                          "type": "Data"
+                        },
+                        {
+                          "ColData": [
+                            {
+                              "value": "Todd and Amanda",
+                              "id": "160"
+                            },
+                            {
+                              "value": "-20000.00"
+                            }
+                          ],
+                          "type": "Data"
+                        }
+                      ]
+                    },
+                    "Summary": {
+                      "ColData": [
+                        {
+                          "value": "Total Partner investments"
+                        },
+                        {
+                          "value": "803833.78"
+                        }
+                      ]
+                    },
+                    "type": "Section"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Retained Earnings",
+                        "id": "4"
+                      },
+                      {
+                        "value": "-199560.30"
+                      }
+                    ],
+                    "type": "Data"
+                  },
+                  {
+                    "ColData": [
+                      {
+                        "value": "Net Income"
+                      },
+                      {
+                        "value": "-58501.31"
+                      }
+                    ],
+                    "type": "Data",
+                    "group": "NetIncome"
+                  }
+                ]
+              },
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Equity"
+                  },
+                  {
+                    "value": "545754.17"
+                  }
+                ]
+              },
+              "type": "Section",
+              "group": "Equity"
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {
+              "value": "TOTAL LIABILITIES AND EQUITY"
+            },
+            {
+              "value": "720989.14"
+            }
+          ]
+        },
+        "type": "Section",
+        "group": "TotalLiabilitiesAndEquity"
+      }
+    ]
+  }
+}

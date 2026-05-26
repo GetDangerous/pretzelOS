@@ -35,6 +35,7 @@
  */
 
 import { getQBOToken } from './qbo-client.js';
+import { callAI } from './ai-budget.js';
 
 // Thresholds for significance flagging
 const LARGE_INVOICE_THRESHOLD = 1000;   // Invoice > $1k = high significance
@@ -349,17 +350,22 @@ async function processWholesaleLifecycle(
       console.log(`[QBO Lifecycle] Estimate for unmatched customer: ${entityName} — skipping`);
       return;
     }
+    // Use the actual QBO TxnDate (the date Drew dated the estimate in QBO),
+    // not the webhook delivery time. Falls back to today only if missing.
+    const estTxnDate = entityDetails?.TxnDate || new Date().toISOString().split('T')[0];
     await env.DB.prepare(`
       INSERT OR IGNORE INTO orders (
         id, account_id, source, order_date,
         gross_revenue, status, doc_number, notes, created_at
-      ) VALUES (?, ?, 'qbo_estimate', datetime('now'), ?, 'estimate', ?, ?, datetime('now'))
+      ) VALUES (?, ?, 'qbo_estimate', ?, ?, 'estimate', ?, ?, datetime('now'))
     `).bind(
-      `qbo_est_${qboEntityId}`, accountId || null, amount || 0,
+      `qbo_est_${qboEntityId}`, accountId || null,
+      estTxnDate,
+      amount || 0,
       entityDetails?.DocNumber || null,
       `QBO Estimate ${entityDetails?.DocNumber || qboEntityId} — packing slip, not yet delivered`
     ).run();
-    console.log(`[QBO Lifecycle] Estimate logged for ${entityName}: $${amount}`);
+    console.log(`[QBO Lifecycle] Estimate logged for ${entityName}: $${amount} (TxnDate ${estTxnDate})`);
     return;
   }
 
@@ -374,16 +380,20 @@ async function processWholesaleLifecycle(
       `).bind(`qbo_est_${linkedEstimate.TxnId}`).run();
     }
 
+    // Use actual TxnDate, not webhook delivery time
+    const invTxnDate = entityDetails?.TxnDate || new Date().toISOString().split('T')[0];
     // Write invoice as order record
     await env.DB.prepare(`
       INSERT OR IGNORE INTO orders (
         id, account_id, source, order_date,
         gross_revenue, status, doc_number, notes, created_at
-      ) VALUES (?, ?, 'qbo_invoice', datetime('now'), ?, 'invoiced', ?, ?, datetime('now'))
+      ) VALUES (?, ?, 'qbo_invoice', ?, ?, 'invoiced', ?, ?, datetime('now'))
     `).bind(
-      `qbo_inv_${qboEntityId}`, accountId || null, amount || 0,
+      `qbo_inv_${qboEntityId}`, accountId || null,
+      invTxnDate,
+      amount || 0,
       entityDetails?.DocNumber || null,
-      `QBO Invoice ${entityDetails?.DocNumber || ''} — delivered, awaiting payment`
+      `QBO Invoice ${entityDetails?.DocNumber || ''} — delivered ${invTxnDate}, awaiting payment`
     ).run();
 
     // Update account health
@@ -557,23 +567,17 @@ Return just the sentence, nothing else.`;
   } catch { /* fall through */ }
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 60,
-        messages: [{ role: 'user', content: prompt }],
-      }),
+    // DIF-3 (May 13 2026): wired through ai-budget
+    const result = await callAI(env, {
+      use_case: 'qbo_txn_notes',
+      model: 'haiku',
+      caller: 'qbo-webhook-worker.js',
+      max_tokens: 60,
+      messages: [{ role: 'user', content: prompt }],
     });
 
-    if (!response.ok) return null;
-    const data = await response.json();
-    return data.content?.[0]?.text?.trim() || null;
+    if (!result.ok) return null;
+    return result.content?.trim() || null;
   } catch {
     return null;
   }
@@ -601,15 +605,27 @@ async function createEventFlag(eventId, entityType, eventType, entityName, amoun
 
   const suggestedAction = buildSuggestedAction(entityType, eventType, entityName, amount, status);
 
+  // Normalize null entity_name for the unique-index dedup (migration 026).
+  const normEntity = entityName || '(global)';
+
   await env.DB.prepare(`
     INSERT INTO financial_flags (
       id, week_start, flag_type, severity, channel,
       entity_name, title, detail, data_point,
-      suggested_action, triggered_by_event, status, created_at
-    ) VALUES (?, ?, ?, ?, 'all', ?, ?, ?, ?, ?, ?, 'open', datetime('now'))
+      suggested_action, triggered_by_event, status, created_at, dedupe_count
+    ) VALUES (?, ?, ?, ?, 'all', ?, ?, ?, ?, ?, ?, 'open', datetime('now'), 1)
+    ON CONFLICT(entity_name, flag_type, week_start) DO UPDATE SET
+      dedupe_count        = dedupe_count + 1,
+      severity            = excluded.severity,
+      title               = excluded.title,
+      detail              = excluded.detail,
+      data_point          = excluded.data_point,
+      suggested_action    = excluded.suggested_action,
+      triggered_by_event  = excluded.triggered_by_event,
+      status              = CASE WHEN financial_flags.status = 'resolved' THEN 'resolved' ELSE 'open' END
   `).bind(
     flagId, weekStart, flagType, severity,
-    entityName,
+    normEntity,
     `${eventType}: ${entityType} — ${entityName}`,
     interpretation || `${eventType} ${entityType} for ${entityName}${amount ? ' ($' + amount.toFixed(0) + ')' : ''}`,
     amount ? `$${amount.toFixed(2)}` : null,

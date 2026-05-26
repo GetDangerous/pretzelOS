@@ -17,6 +17,7 @@
  */
 
 import { getDirectiveFromKV } from './cfo-agent.js';
+import { callAI } from './ai-budget.js';
 
 // Thresholds — if below these, the optimizer rewrites the prompt
 const BENCHMARKS = {
@@ -28,7 +29,7 @@ const BENCHMARKS = {
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runOptimizer(env));
+    return runOptimizer(env);
   },
 
   async fetch(request, env) {
@@ -232,23 +233,17 @@ async function runOptimizer(env) {
     });
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1500,
-          messages: [{ role: 'user', content: rewritePrompt }],
-        }),
+      // DIF-3 (May 13 2026): wired through ai-budget
+      const aiResult = await callAI(env, {
+        use_case: 'optimizer_next_action',
+        model: 'sonnet',
+        caller: 'optimizer-worker.js',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: rewritePrompt }],
       });
 
-      if (!response.ok) continue;
-      const data = await response.json();
-      const text = data.content?.[0]?.text || '';
+      if (!aiResult.ok) continue;
+      const text = aiResult.content || '';
 
       const clean = text.replace(/```json\n?|\n?```/g, '').trim();
       const result = JSON.parse(clean);

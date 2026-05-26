@@ -1,0 +1,10 @@
+Tax rate,Tax amount,Taxable amount
+UT SPECIAL TAX,222.2,21742.2
+UT CITY TAX,109.26,21742.2
+UT COUNTY TAX,335.4,21742.2
+UT STATE TAX,1162.76,21742.2
+Restaurant Tax,217.21,21722.2
+Non-Taxable Sales,0.0,0.0
+Non-Taxable Service Charges,0.0,96.5
+Tax Exempt Sales,0.0,102.4
+Marketplace facilitator tax - Remitted by restaurant,518.2,6398.82

@@ -1,0 +1,5 @@
+Service charge,Count,Amount
+Delivery Charge,6,18.0
+Delivery Fee > 6 Miles,2,3.5
+Local Delivery,1,75.0
+Total,9,96.5

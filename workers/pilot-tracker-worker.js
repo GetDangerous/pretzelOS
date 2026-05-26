@@ -15,6 +15,8 @@
  *   KV
  */
 
+import { callAI } from './ai-budget.js';
+
 // Pilot success thresholds (adjust based on deal terms)
 const PILOT_TARGETS = {
   min_weekly_units_per_store: 20,      // Minimum units/week to call it a success
@@ -75,7 +77,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     // Runs weekly — checks targets and generates brief if ready
-    ctx.waitUntil(runWeeklyPilotCheck(env));
+    return runWeeklyPilotCheck(env);
   }
 };
 
@@ -201,26 +203,20 @@ Tone: confident, data-driven, but still has the brand energy. This goes to Twist
 
 Return JSON: {title, executive_summary, store_performance, recommendation, projections, next_steps}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+  // DIF-3 (May 13 2026): wired through ai-budget
+  const result = await callAI(env, {
+    use_case: 'pilot_status_tracking',
+    model: 'sonnet',
+    caller: 'pilot-tracker-worker.js',
+    max_tokens: 2000,
+    messages: [{ role: 'user', content: prompt }],
   });
 
-  if (!response.ok) {
+  if (!result.ok) {
     return new Response('Claude API error', { status: 500 });
   }
 
-  const data = await response.json();
-  const text = data.content?.[0]?.text || '';
+  const text = result.content || '';
 
   try {
     const clean = text.replace(/```json\n?|\n?```/g, '').trim();

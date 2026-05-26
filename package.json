@@ -1,0 +1,15 @@
+{
+  "name": "pretzel-os",
+  "private": true,
+  "scripts": {
+    "acceptance": "bash tests/acceptance.test.sh",
+    "deprecation": "bash tests/deprecation.test.sh",
+    "contracts": "curl -sf -H \"X-Pretzel-Auth: ${PRETZEL_AUTH:-dpc-dash-2026-1c-shared-secret}\" https://pretzel-os.drew-f39.workers.dev/finance/contracts | python3 -m json.tool",
+    "pre-deploy": "bash tests/pre-deploy.sh",
+    "deploy": "bash tests/pre-deploy.sh && wrangler deploy",
+    "deploy-force": "echo '⚠ Skipping pre-deploy gate (--warn-only)' && bash tests/pre-deploy.sh --warn-only && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.83.0"
+  }
+}
