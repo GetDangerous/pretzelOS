@@ -1,7 +1,13 @@
-# Phase 33 — Final State Summary (Filing-Ready)
+# Phase 33 — As Documented At Close (Historical Artifact)
 
-**Date**: 2026-05-20
-**Status**: Books cent-accurate, BS balanced, FY2025 P&L fully closed to Retained Earnings
+> **⚠️ HISTORICAL SNAPSHOT.** This document describes intended/observed state at Phase 33 close on **2026-05-20**. It is a frozen artifact. Subsequent Sessions (22-24 post-FY2025 reclasses, Phase A Week 1 plug drains, etc.) modified the GL beyond this snapshot.
+>
+> **For current GL state, see [`docs/CURRENT_GL_STATE.md`](../docs/CURRENT_GL_STATE.md).**
+>
+> Document renamed from `PHASE_33_FINAL_STATE.md` → `PHASE_33_AS_DOCUMENTED_AT_CLOSE.md` per Phase A Week 1 Task A4 to clarify historical vs current.
+
+**Date**: 2026-05-20 (close of Phase 33)
+**Status at that date**: Books cent-accurate, BS balanced, FY2025 P&L fully closed to Retained Earnings
 
 ## Acceptance Criteria scoreboard
 
