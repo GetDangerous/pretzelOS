@@ -5,6 +5,7 @@
 // keep the worker import graph shallow.
 
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
+import { auditPostJe } from './audit-trail.js';
 
 // DIF-3: model id now resolved via ai-budget.js.
 
@@ -163,6 +164,26 @@ export async function processLoanPayments(env, opts = {}) {
     await env.DB.prepare(`
       UPDATE loans SET current_balance = ? WHERE id = ?
     `).bind(remaining, bestLoan.id).run();
+
+    // Phase A Week 1 B1: audit_trail entry for the loan-payment JE just posted
+    await auditPostJe(env, {
+      je_id: entryId,
+      source_type: 'loan_payment',
+      je_data: {
+        id: entryId,
+        entry_date: p.txn_date.slice(0, 10),
+        total_debit: pmt,
+        total_credit: pmt,
+      },
+      metadata: {
+        loan_id: bestLoan.id,
+        loan_name: bestLoan.loan_name,
+        principal: split.principal,
+        interest: split.interest,
+        mercury_txn_id: p.id,
+        remaining_balance: remaining,
+      },
+    }).catch(err => console.error('[cfo-tools] audit loan payment failed:', err.message));
 
     processed.push({ loan: bestLoan.loan_name, amount: pmt, principal: split.principal, interest: split.interest, remaining });
     posted++;

@@ -13,6 +13,8 @@
 //   - Idempotent: skip if JE exists with source_id = period+asset_id
 //   - Optionally unlock+relock prior period if backfilling
 
+import { auditPostJe } from './audit-trail.js';
+
 async function resolveAccountIds(env, names) {
   const placeholders = names.map(() => '?').join(',');
   const { results } = await env.DB.prepare(
@@ -142,6 +144,15 @@ export async function postMonthlyDepreciation(env, { period = null, force = fals
       UPDATE fixed_assets SET accumulated_depreciation=?, net_book_value=acquisition_cost-? WHERE id=?
     `).bind(newAccum, newAccum, a.id).run();
   }
+
+  // Phase A Week 1 B1: audit_trail entry for monthly depreciation cron JE
+  await auditPostJe(env, {
+    je_id: jeId,
+    source_type: 'monthly_depreciation',
+    actor: 'system:cron:monthly_depreciation',
+    je_data: { id: jeId, entry_date: entryDate, total_debit: totalAll, total_credit: totalAll, description },
+    metadata: { period_start: periodStart, total_dep: totalDep, total_amort: totalAmort, asset_count: assets.length },
+  }).catch(err => console.error('[monthly-dep-cron] audit failed:', err.message));
 
   return {
     ok: true,

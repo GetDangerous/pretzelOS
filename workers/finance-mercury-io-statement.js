@@ -20,6 +20,7 @@
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
 import { callAI } from './ai-budget.js';
 import { lookupVendor } from './finance-vendor-kb.js';
+import { auditPostJe } from './audit-trail.js';
 
 const MERCURY_CREDIT_ACCOUNT_NAME = 'Mercury Credit (0000) - 1';
 const STATEMENT_SOURCE_TYPE = 'mercury_io_statement';
@@ -261,6 +262,15 @@ export async function ingestMercuryIOStatement(env, pdfBase64, period, opts = {}
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(crypto.randomUUID(), entryId, i + 1, ln.account_id, ln.debit, ln.credit, ln.memo.slice(0, 200)).run();
     }
+
+    // Phase A Week 1 B1: audit_trail entry per Mercury IO statement line
+    await auditPostJe(env, {
+      je_id: entryId,
+      source_type: TXN_SOURCE_TYPE,
+      actor: 'system:mercury_io_statement_upload',
+      je_data: { id: entryId, entry_date: t.date, total_debit: absAmt, total_credit: absAmt, vendor: t.description, is_payment: isPayment },
+      metadata: { statement_month: statementMonth, line_number: lineNumber, card_mask: t.card_mask || null, source_id: sourceId },
+    }).catch(err => console.error('[mercury-io] audit failed:', err.message));
 
     posted.push({
       line: lineNumber, date: t.date, vendor: t.description, amount: t.amount,

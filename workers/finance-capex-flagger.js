@@ -13,6 +13,7 @@
 //   POST /finance/cfo/capex/:mercury_txn_id/reject     — mark as expensed (no action on JE)
 
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
+import { auditPostJe } from './audit-trail.js';
 
 // Counterparties that are DEFINITELY not capex even if >$2,500.
 const NON_CAPEX_PATTERNS = [
@@ -268,6 +269,21 @@ export async function capitalize(env, mercuryTxnId, body) {
     `Capitalized ${assetName} ($${cost}, ${usefulLife}yr ${depMethod}) from Mercury txn ${mercuryTxnId}`,
     JSON.stringify({ asset_id: assetId, new_entry_id: newEntryId, monthly_depreciation: monthlyDep, schedule_months: scheduleRows.length })
   ).run();
+
+  // Phase A Week 1 B1: audit_trail entries (capex approval + capitalization JE)
+  if (newEntryId) {
+    await auditPostJe(env, {
+      je_id: newEntryId,
+      source_type: 'capitalization',
+      actor: 'drew',
+      je_data: { id: newEntryId, entry_date: acquisitionDate, total_debit: cost, total_credit: cost },
+      metadata: {
+        asset_id: assetId, asset_name: assetName, asset_class: assetClass,
+        useful_life_years: usefulLife, depreciation_method: depMethod, monthly_depreciation: monthlyDep,
+        mercury_txn_id: mercuryTxnId, prior_expense_je_id: oldEntry?.id || null,
+      },
+    }).catch(err => console.error('[capex] audit capitalize failed:', err.message));
+  }
 
   return {
     ok: true,

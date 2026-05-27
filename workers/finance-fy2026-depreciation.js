@@ -19,6 +19,8 @@
 //   Amortization: $4,727
 //   Total:        $67,481
 
+import { auditPostJe } from './audit-trail.js';
+
 const MONTHLY_DEPRECIATION = 5229.50;     // DR Depreciation / CR Accumulated depreciation
 const MONTHLY_AMORTIZATION = 393.92;      // DR Amortization expenses / CR Accumulated amortization
 const MONTHLY_TOTAL = MONTHLY_DEPRECIATION + MONTHLY_AMORTIZATION; // 5623.42
@@ -115,6 +117,16 @@ export async function postFy2026Depreciation(env, { dry_run = false } = {}) {
         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)
       `).bind(je.id, lineNum++, accountIds[ln.account], ln.debit, ln.credit).run();
     }
+
+    // Phase A Week 1 B1: audit_trail entry for each FY2026 dep JE
+    await auditPostJe(env, {
+      je_id: je.id,
+      source_type: 'monthly_depreciation',
+      actor: 'system:session_24e_fy2026_dep',
+      je_data: { id: je.id, entry_date: je.entry_date, total_debit: je.total_amount, total_credit: je.total_amount, description: je.description },
+      metadata: { fy: 'FY2026', schedule: 'Year-3 Form 4562' },
+    }).catch(err => console.error('[fy2026-dep] audit failed:', err.message));
+
     posted++;
     log.push({ step: 'posted', je_id: je.id, date: je.entry_date, amount: je.total_amount });
   }

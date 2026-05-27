@@ -24,6 +24,7 @@
 //   - Every post gets an audit log entry + is reversible via entry_reversal_of_entry_id chain
 
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
+import { auditPostJe, auditReverseJe } from './audit-trail.js';
 
 // ── Mercury account → COA id resolver (cached per invocation) ─────────────
 let _mercuryAccountCache = null;
@@ -167,6 +168,30 @@ export async function postJeForTxn(env, txn, opts = {}) {
     WHERE id = ?
   `).bind(entryId, txn.id).run();
 
+  // Phase A Week 1 B1: audit_trail entry for this JE post
+  await auditPostJe(env, {
+    je_id: entryId,
+    source_type: 'mercury_txn',
+    je_data: {
+      id: entryId,
+      entry_date: (txn.txn_date || '').slice(0, 10),
+      total_debit: amount,
+      total_credit: amount,
+      direction: isInflow ? 'inflow' : 'outflow',
+      debit_account: debitAccount,
+      credit_account: creditAccount,
+    },
+    metadata: {
+      mercury_txn_id: txn.id,
+      counterparty: txn.counterparty_name || null,
+      proposed_confidence: txn.proposed_confidence || null,
+      categorizer_reasoning: (txn.proposed_reasoning || '').slice(0, 200) || null,
+    },
+  }).catch(err => {
+    // Don't fail the JE post if audit write fails — log and continue
+    console.error('[je-poster] audit_trail write failed for', entryId, err.message);
+  });
+
   return {
     posted: true,
     entry_id: entryId,
@@ -306,6 +331,29 @@ export async function reverseJe(env, entryId, reason) {
     `Reversed JE ${entryId}: ${reason || 'no reason given'}`,
     JSON.stringify({ reversal_id: reversalId, original_entry: entry })
   ).run();
+
+  // Phase A Week 1 B1: audit_trail entries (2 — one for reversal JE post, one for status flip)
+  await auditPostJe(env, {
+    je_id: reversalId,
+    source_type: 'manual_reversal',
+    actor: 'drew',
+    je_data: {
+      id: reversalId,
+      entry_date: new Date().toISOString().slice(0, 10),
+      total_debit: entry.total_debit,
+      total_credit: entry.total_credit,
+      reversal_of: entryId,
+    },
+    metadata: { reverses_entry_id: entryId, reverses_source_type: entry.source_type, reason },
+  }).catch(err => console.error('[je-poster] audit reversal post failed:', err.message));
+
+  await auditReverseJe(env, {
+    je_id: entryId,
+    source_type: entry.source_type || 'unknown',
+    actor: 'drew',
+    reason,
+    metadata: { reversal_id: reversalId },
+  }).catch(err => console.error('[je-poster] audit reverse failed:', err.message));
 
   return { reversed: true, reversal_id: reversalId, original_entry_id: entryId };
 }

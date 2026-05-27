@@ -173,6 +173,11 @@ binding = "AI"
 CF_ACCOUNT_ID = "f399e3bcd5ea1501830d0ad1d35d9da3"
 CLOUDFLARE_ACCOUNT_ID = "f399e3bcd5ea1501830d0ad1d35d9da3"  # for d1-backup.js (REST API export)
 D1_DATABASE_ID = "950cc9e0-9dd2-4f78-af55-de6385ab293b"     # pretzel-os production
+
+# Audit trail (Phase A Week 1 Task B1): commit_hash stamped on every audit_trail row.
+# Update this manually before each `wrangler deploy` (run: git rev-parse --short HEAD).
+# TODO Week 2: automate via deploy script.
+DEPLOY_COMMIT_HASH = "6737c65"
 FROM_EMAIL = "drew@dangerouspretzel.com"
 DREW_EMAIL = "drew@dangerouspretzel.com"
 BRAND_NAME = "Dangerous Pretzel Co"

@@ -15,6 +15,7 @@
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
 import { callAI } from './ai-budget.js';
 import { lookupVendor } from './finance-vendor-kb.js';
+import { auditPostJe } from './audit-trail.js';
 
 const CHASE_ACCOUNT_NAME = 'Chase Ink Business (3178)';
 const TXN_SOURCE_TYPE = 'chase_ink_statement_txn';
@@ -230,6 +231,15 @@ export async function ingestChaseInkStatement(env, pdfBase64, period, opts = {})
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(crypto.randomUUID(), entryId, i + 1, ln.account_id, ln.debit, ln.credit, ln.memo.slice(0, 200)).run();
     }
+
+    // Phase A Week 1 B1: audit_trail entry for each Chase Ink statement line
+    await auditPostJe(env, {
+      je_id: entryId,
+      source_type: TXN_SOURCE_TYPE,
+      actor: 'system:chase_ink_statement_upload',
+      je_data: { id: entryId, entry_date: t.date, total_debit: absAmt, total_credit: absAmt, type: t.type, vendor: t.description },
+      metadata: { statement_month: statementMonth, line_number: lineNumber, source_id: sourceId },
+    }).catch(err => console.error('[chase-ink] audit failed:', err.message));
 
     posted.push({ line: lineNumber, date: t.date, type: t.type, vendor: t.description, amount: t.amount, entry_id: entryId });
   }

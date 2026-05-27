@@ -38,6 +38,7 @@
 // source_type='leaf_amortization_reconstruction'
 
 import { isReadOnly, readOnlySkip } from './finance-shared.js';
+import { auditPostJe } from './audit-trail.js';
 
 const SOURCE_TYPE = 'leaf_amortization_reconstruction';
 
@@ -337,6 +338,17 @@ export async function postLeafAmortization(env, opts = {}) {
       `INSERT INTO journal_entry_lines (id, journal_entry_id, line_number, account_id, debit, credit, memo)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).bind(`${jeId}-l${lineNum}`, jeId, lineNum, leafClearingAccount, 0, t.amount, `LEAF ${loan.app} drain clearing (Mercury cash already DR'd clearing)`).run();
+
+    // Phase A Week 1 B1: audit_trail entry for LEAF amortization JE
+    await auditPostJe(env, {
+      je_id: jeId,
+      source_type: SOURCE_TYPE,
+      je_data: { id: jeId, entry_date: t.txn_date.slice(0, 10), total_debit: totalDr, total_credit: totalCr },
+      metadata: {
+        loan_app: loan.app, loan_name: loan.name, payment_num: paymentNum,
+        principal, interest, sales_tax, mercury_txn_id: t.id,
+      },
+    }).catch(err => console.error('[leaf-amort] audit failed:', err.message));
 
     results.push({ txn: t.id, status: 'posted', je_id: jeId, principal, interest, sales_tax });
   }

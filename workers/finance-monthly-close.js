@@ -15,6 +15,7 @@
 // Endpoint: POST /finance/cfo/monthly-close[?period=YYYY-MM]  (default: prior month)
 
 import { isReadOnly, readOnlySkip, getOrdersRevenueForPeriod, getGLRevenueForPeriod } from './finance-shared.js';
+import { auditPostJe } from './audit-trail.js';
 
 function round2(n) { return Math.round((n || 0) * 100) / 100; }
 
@@ -240,6 +241,14 @@ async function runMonthlyDepreciation(env, period) {
     await env.DB.prepare(
       `UPDATE fixed_assets SET accumulated_depreciation = COALESCE(accumulated_depreciation, 0) + ?, net_book_value = acquisition_cost - (COALESCE(accumulated_depreciation, 0) + ?) WHERE id = ?`
     ).bind(s.amount, s.amount, s.asset_id).run();
+
+    // Phase A Week 1 B1: audit_trail entry for monthly-close depreciation JE
+    await auditPostJe(env, {
+      je_id: entryId,
+      source_type: 'depreciation',
+      je_data: { id: entryId, entry_date: s.schedule_date, total_debit: s.amount, total_credit: s.amount, asset_name: s.asset_name },
+      metadata: { schedule_id: s.id, asset_id: s.asset_id, period },
+    }).catch(err => console.error('[monthly-close] audit depreciation failed:', err.message));
 
     posted.push({ asset: s.asset_name, amount: s.amount, date: s.schedule_date });
   }

@@ -962,6 +962,64 @@ export async function runTier1(env, triggeredBy = 'cron') {
     }
   ));
 
+  // Phase A Week 1 B1: audit_trail_covers_active_writers — verify that JEs posted
+  // since audit_trail was deployed (migration 100 applied 2026-05-27) have
+  // corresponding audit_trail entries. Catches regressions where a JE-posting
+  // path forgets to call auditPostJe() OR a dormant Phase 33 worker gets
+  // re-activated without audit wrapping (per JE_POSTING_PATHS_CATALOG.md Option B).
+  //
+  // Approach: check JEs created after the audit_trail schema migration that have
+  // NO matching audit_trail row. The 9 active paths from the catalog should ALL
+  // be writing audit entries; any JE created post-deploy without one is a regression.
+  //
+  // Excluded source_types (one-time historical / dormant, won't fire forward):
+  //   - All Phase 33 reconstruction source_types
+  //   - Migration-applied JEs (have NO active worker path)
+  checks.push(await runCheck(
+    'audit_trail_covers_active_writers',
+    'JEs posted via the 9 active worker paths have matching audit_trail entries',
+    async () => {
+      try {
+        // Cutover date: when migration 100 was applied (2026-05-27).
+        // Anything posted before this can't have audit entries.
+        const cutover = '2026-05-27 16:00:00';
+        const row = await env.DB.prepare(`
+          SELECT COUNT(*) as missing
+          FROM journal_entries je
+          WHERE je.status = 'posted'
+            AND je.created_at > ?
+            -- Active forward-path source_types (per JE_POSTING_PATHS_CATALOG.md)
+            AND je.source_type IN (
+              'mercury_txn',
+              'loan_payment',
+              'depreciation',
+              'monthly_depreciation',
+              'leaf_amortization_reconstruction',
+              'capitalization',
+              'chase_ink_statement_txn',
+              'mercury_io_statement_txn',
+              'manual'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM audit_trail at
+              WHERE at.related_je_id = je.id OR (at.entity_type = 'journal_entry' AND at.entity_id = je.id)
+            )
+        `).bind(cutover).first();
+        const missing = row?.missing || 0;
+        if (missing > 0) {
+          return {
+            status: 'fail',
+            expected: '0 JEs post-2026-05-27 missing audit_trail entry',
+            actual: `${missing} JEs missing audit_trail — likely a posting path skipped auditPostJe() call`,
+          };
+        }
+        return { status: 'pass', expected: 'all active-path JEs audited', actual: '0 missing' };
+      } catch (err) {
+        return { status: 'fail', expected: 'no error', actual: err.message };
+      }
+    }
+  ));
+
   const durationMs = Date.now() - started;
   const failed = checks.filter(c => c.status === 'fail').length;
 
